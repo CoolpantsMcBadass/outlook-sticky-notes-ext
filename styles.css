@@ -1,0 +1,469 @@
+#osn-panel {
+  position: relative;
+  background: #feee90;
+  border: none;
+  border-left: 2px solid #c9a030;
+  border-bottom: 2px solid #c9a030;
+  box-shadow: -3px 3px 8px rgba(180,140,0,0.15);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin: 0 0 12px 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  color: #5a4010;
+  box-shadow: 0 2px 8px rgba(91,64,0,0.15);
+  flex-shrink: 0;
+  transition: width 0.15s ease, padding 0.15s ease;
+}
+
+/* ── Collapsed: sticky-note square floating top-right ── */
+#osn-panel.osn-collapsed {
+  position: absolute;
+  top: 3px;
+  right: 17px;
+  width: 52px;
+  height: 52px;
+  padding: 0;
+  border-radius: 0;
+  border: none;
+  box-shadow: none;
+  background: var(--osn-postit-url) center/cover no-repeat transparent;
+  cursor: pointer;
+  overflow: visible;
+  margin: 0;
+  z-index: 10;
+}
+
+#osn-panel.osn-collapsed #osn-header {
+  width: 52px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  border: none;
+  cursor: pointer;
+}
+
+#osn-panel.osn-collapsed #osn-title-text,
+#osn-panel.osn-collapsed #osn-btn-add,
+#osn-panel.osn-collapsed #osn-pin {
+  display: none;
+}
+
+
+#osn-collapsed-plus {
+  display: none;
+}
+
+#osn-panel.osn-collapsed #osn-collapsed-plus {
+  display: block;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 16px;
+  font-weight: 600;
+  color: #b8922a;
+  pointer-events: none;
+  line-height: 1;
+}
+
+
+#osn-header {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+  min-height: 12px;
+  margin-bottom: 8px;
+  position: relative;
+}
+
+#osn-header[data-tooltip]:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(60, 40, 0, 0.85);
+  color: #fff;
+  font-size: 11px;
+  white-space: nowrap;
+  padding: 3px 8px;
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 9999;
+  opacity: 0;
+  animation: osn-tooltip-in 0s 0.4s forwards;
+}
+
+#osn-header[data-tooltip]:has(#osn-btn-add:hover)::after {
+  display: none;
+}
+
+#osn-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #a07828;
+  letter-spacing: 0.2px;
+  flex: 1;
+}
+
+#osn-btn-add {
+  background: #b8922a;
+  border: none;
+  border-radius: 4px;
+  width: 18px;
+  height: 18px;
+  line-height: 17px;
+  text-align: center;
+  font-size: 14px;
+  color: #fff;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+#osn-btn-add:hover {
+  background: #a07828;
+}
+
+#osn-btn-add[data-tooltip] {
+  position: relative;
+}
+
+#osn-btn-add[data-tooltip]:hover::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  background: rgba(60, 40, 0, 0.85);
+  color: #fff;
+  font-size: 11px;
+  white-space: nowrap;
+  padding: 3px 8px;
+  border-radius: 4px;
+  pointer-events: none;
+  z-index: 9999;
+  opacity: 0;
+  animation: osn-tooltip-in 0s 0.4s forwards;
+}
+
+@keyframes osn-tooltip-in {
+  to { opacity: 1; }
+}
+
+
+#osn-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  cursor: pointer;
+  min-height: 24px;
+  max-height: 220px;
+  overflow-y: auto;
+  border-radius: 4px;
+  margin-top: 8px;
+  transition: background 0.15s;
+}
+
+#osn-body:hover {
+  background: rgba(91, 64, 0, 0.06);
+}
+
+#osn-empty {
+  color: #a08040;
+  font-size: 12px;
+  font-style: italic;
+}
+
+.osn-note {
+  background: #fef5c0;
+  border: none;
+  border-left: 1px solid #d4a800;
+  border-bottom: 1px solid #d4a800;
+  border-radius: 5px;
+  padding: 6px 10px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: default;
+}
+
+.osn-note.osn-dragging { opacity: 0.4; }
+.osn-note.osn-drag-over { border-color: #7b5800; box-shadow: 0 0 0 2px rgba(123,88,0,0.3); }
+
+.osn-drag-handle {
+  color: #b8922a;
+  font-size: 14px;
+  cursor: grab;
+  flex-shrink: 0;
+  user-select: none;
+  padding-top: 1px;
+}
+.osn-drag-handle:active { cursor: grabbing; }
+
+.osn-note-text {
+  flex: 1;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.5;
+  font-size: 13px;
+}
+
+.osn-note-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.osn-note-date {
+  font-size: 10px;
+  color: #a08040;
+}
+
+.osn-note-edit {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #b8922a;
+  font-size: 13px;
+  padding: 0;
+  line-height: 1;
+}
+
+.osn-note-edit:hover { color: #5c4000; }
+
+.osn-note-delete {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #c8a050;
+  font-size: 13px;
+  padding: 0;
+  line-height: 1;
+}
+
+.osn-note-delete:hover { color: #e53935; }
+
+/* ── Inline edit mode ── */
+.osn-edit-area { width: 100%; }
+
+.osn-edit-textarea {
+  width: 100%;
+  border: none;
+  border-radius: 4px;
+  padding: 5px 7px;
+  font-size: 13px;
+  font-family: inherit;
+  background: #fef5c0;
+  resize: vertical;
+  min-height: 52px;
+  box-sizing: border-box;
+  color: #5a4010;
+}
+
+.osn-edit-textarea:focus { outline: none; border-color: #5c4000; }
+
+.osn-edit-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 4px;
+}
+
+.osn-edit-char-count {
+  font-size: 10px;
+  color: #a08040;
+}
+
+.osn-edit-btns { display: flex; gap: 5px; }
+
+.osn-edit-save {
+  background: #c9a030;
+  border: none;
+  border-radius: 4px;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  cursor: pointer;
+}
+
+.osn-edit-save:hover { background: #a07828; }
+
+.osn-edit-cancel {
+  background: #e8d890;
+  border: none;
+  border-radius: 4px;
+  padding: 3px 10px;
+  font-size: 11px;
+  color: #5c4000;
+  cursor: pointer;
+}
+
+.osn-edit-cancel:hover { background: #d4c070; }
+
+#osn-input-area {
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#osn-input-area.osn-hidden {
+  display: none;
+}
+
+#osn-textarea {
+  width: 100%;
+  border: none;
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-size: 13px;
+  font-family: inherit;
+  background: #fef5c0;
+  resize: vertical;
+  min-height: 60px;
+  box-sizing: border-box;
+  color: #5a4010;
+}
+
+#osn-textarea:focus {
+  outline: none;
+  border-color: transparent;
+}
+
+/* ── Undo bar ── */
+#osn-undo-bar {
+  font-size: 11px;
+  color: #a08040;
+  text-align: right;
+  margin-top: 4px;
+}
+
+#osn-undo-bar.osn-hidden { display: none; }
+
+#osn-undo-btn {
+  background: none;
+  border: none;
+  color: #5c4000;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+}
+
+/* ── Storage warning ── */
+#osn-storage-warning {
+  font-size: 11px;
+  color: #e53935;
+  margin-top: 4px;
+}
+
+#osn-storage-warning.osn-hidden { display: none; }
+
+/* ── Character counter ── */
+#osn-char-counter {
+  font-size: 10px;
+  color: #a08040;
+  text-align: right;
+}
+
+#osn-char-counter.osn-hidden { display: none; }
+#osn-char-counter.osn-char-urgent { color: #e53935; font-weight: 600; }
+
+#osn-input-btns {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+#osn-save {
+  background: #c9a030;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 14px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  cursor: pointer;
+}
+
+#osn-save:hover { background: #a07828; }
+
+#osn-cancel {
+  background: #e8d890;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 14px;
+  font-size: 12px;
+  color: #5c4000;
+  cursor: pointer;
+}
+
+#osn-cancel:hover { background: #d4c070; }
+
+/* ── Pop-out window ────────────────────────────────────────────────────────── */
+#osn-panel.osn-popout {
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 0;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+#osn-panel.osn-popout #osn-body {
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+#osn-resize-handle {
+  display: none;
+}
+
+#osn-panel:not(.osn-collapsed) #osn-resize-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 10px;
+  cursor: ns-resize;
+  color: #c9a030;
+  font-size: 16px;
+  letter-spacing: 2px;
+  user-select: none;
+  margin: 2px 0 -4px;
+  opacity: 0.6;
+}
+
+#osn-panel:not(.osn-collapsed) #osn-resize-handle:hover {
+  opacity: 1;
+  color: #7b5800;
+}
+
+/* ── Dark mode: remove corner bleed in pop-out ─────────────────────────────── */
+@media (prefers-color-scheme: dark) {
+  #osn-panel.osn-popout {
+    border-radius: 0;
+  }
+}
+
+/* ── Email list badge ──────────────────────────────────────────────────────── */
+.osn-list-badge {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  margin-left: 5px;
+  vertical-align: middle;
+  flex-shrink: 0;
+  pointer-events: none;
+  position: relative;
+  top: -1px;
+  object-fit: contain;
+}
