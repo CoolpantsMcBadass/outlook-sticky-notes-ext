@@ -3,6 +3,7 @@
   let collapsed = false;
   let lastDeleted = null;  // for undo
   let dragSrcId = null;    // for drag-and-drop reorder
+  let cachedIsCompose = false; // cached per URL to avoid repeated querySelector in observer
 
   function isExtensionAlive() {
     try {
@@ -54,12 +55,13 @@
     const convEl = document.querySelector('[data-convid]');
     if (convEl) return "osn_" + convEl.getAttribute('data-convid');
 
-    // Last resort: subject heading text
+    // Last resort: subject heading text. Collision risk — threads sharing the same
+    // subject will share notes. Only used when no ID is available at all.
     const subj = document.querySelector('[role="heading"][aria-level="2"], [role="heading"][aria-level="1"], [role="heading"][aria-level="3"]');
     if (subj && subj.textContent.trim()) {
       return "osn_subj_" + subj.textContent.trim().slice(0, 80);
     }
-    return null; // refuse to use a shared fallback key
+    return null; // no usable key — caller will retry
   }
 
   // ── Key migration ───────────────────────────────────────────────────────────
@@ -81,8 +83,12 @@
           }
           toRemove.push(k);
         });
-        if (toRemove.length) chrome.storage.local.remove(toRemove);
-        if (Object.keys(toSet).length) chrome.storage.local.set(toSet);
+        if (toRemove.length) chrome.storage.local.remove(toRemove, () => {
+          if (chrome.runtime.lastError) console.warn("osn migrate remove:", chrome.runtime.lastError);
+        });
+        if (Object.keys(toSet).length) chrome.storage.local.set(toSet, () => {
+          if (chrome.runtime.lastError) console.warn("osn migrate set:", chrome.runtime.lastError);
+        });
       });
     } catch { /* context invalidated */ }
   }
@@ -102,7 +108,9 @@
   function saveNotes(key, notes) {
     if (!isExtensionAlive()) return;
     try {
-      chrome.storage.local.set({ [key]: notes });
+      chrome.storage.local.set({ [key]: notes }, () => {
+        if (chrome.runtime.lastError) console.warn("osn save:", chrome.runtime.lastError);
+      });
     } catch { /* context invalidated — ignore */ }
   }
 
@@ -248,18 +256,17 @@
           panel.style.top = (headingRect.top - rootRect.top - 6) + "px";
         }
       }
-      body.style.display = "none";
-      input.style.display = "none";
-      if (addBtn) addBtn.style.display = "none";
-clearUndo();
+      body?.classList.add("osn-hidden");
+      input?.classList.add("osn-hidden");
+      addBtn?.classList.add("osn-hidden");
+      clearUndo();
     } else {
       panel?.classList.remove("osn-collapsed");
       if (isPopout()) panel.style.top = "";
-      body.style.display = "";
-      input.style.display = "";
-      input.classList.add("osn-hidden");
+      body?.classList.remove("osn-hidden");
+      input?.classList.add("osn-hidden"); // stay hidden until user opens it
       const hasNotes = document.querySelectorAll(".osn-note").length > 0;
-      if (addBtn) addBtn.style.display = hasNotes ? "" : "none";
+      if (hasNotes) addBtn?.classList.remove("osn-hidden");
     }
   }
 
@@ -270,7 +277,7 @@ clearUndo();
     if (!text) return;
 
     const notes = await loadNotes(currentKey);
-    notes.unshift({ id: Date.now(), text, date: new Date().toLocaleString() });
+    notes.unshift({ id: crypto.randomUUID(), text, date: new Date().toISOString() });
     saveNotes(currentKey, notes);
     ta.value = "";
     hideInput();
@@ -323,7 +330,7 @@ clearUndo();
     if (!isExtensionAlive()) return;
     try {
       chrome.storage.local.getBytesInUse(null, (bytes) => {
-        const QUOTA = 10 * 1024 * 1024; // 10 MB
+        const QUOTA = chrome.storage.local.QUOTA_BYTES;
         const pct = bytes / QUOTA;
         const warning = document.getElementById("osn-storage-warning");
         if (!warning) return;
@@ -373,7 +380,7 @@ clearUndo();
       const notes = await loadNotes(currentKey);
       const idx = notes.findIndex((n) => n.id === note.id);
       if (idx !== -1) {
-        notes[idx] = { ...notes[idx], text: newText, date: new Date().toLocaleString() };
+        notes[idx] = { ...notes[idx], text: newText, date: new Date().toISOString() };
         saveNotes(currentKey, notes);
         renderNotes(notes);
       }
@@ -388,19 +395,24 @@ clearUndo();
   function escapeHtml(str) {
     return str
       .replace(/&/g, "&amp;").replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
+  // Render a stored ISO date string in a consistent, locale-independent short format.
+  // Falls back gracefully for old notes that stored toLocaleString() values.
+  function formatDate(dateStr) {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr; // legacy locale string — display as-is
+    return d.toLocaleString(undefined, {
+      month: "short", day: "numeric", year: "numeric",
+      hour: "numeric", minute: "2-digit",
+    });
   }
 
   function updateCollapsedPlus(noteCount) {
     const plus = document.getElementById("osn-collapsed-plus");
     if (!plus) return;
-    if (noteCount === 0) {
-      plus.textContent = "+";
-      plus.style.display = "";
-    } else {
-      plus.textContent = String(noteCount);
-      plus.style.display = "";
-    }
+    plus.textContent = noteCount === 0 ? "+" : String(noteCount);
   }
 
   function renderNotes(notes) {
@@ -408,7 +420,7 @@ clearUndo();
     if (!body) return;
 
     const addBtn = document.getElementById("osn-btn-add");
-    if (addBtn) addBtn.style.display = notes.length > 0 ? "" : "none";
+    if (addBtn) addBtn.classList.toggle("osn-hidden", notes.length === 0);
     updateCollapsedPlus(notes.length);
 
     body.innerHTML = "";
@@ -429,7 +441,7 @@ clearUndo();
         <div class="osn-note-meta">
           <button class="osn-note-edit" title="Edit">✎</button>
           <button class="osn-note-delete" title="Delete">✕</button>
-          <span class="osn-note-date">${escapeHtml(note.date)}</span>
+          <span class="osn-note-date">${escapeHtml(formatDate(note.date))}</span>
         </div>
       `;
 
@@ -597,9 +609,9 @@ clearUndo();
     collapsed = true;
     updateCollapsedPlus(notes.length);
     panel.classList.add("osn-collapsed");
-    panel.querySelector("#osn-body").style.display = "none";
-    panel.querySelector("#osn-input-area").style.display = "none";
-    panel.querySelector("#osn-btn-add").style.display = "none";
+    panel.querySelector("#osn-body").classList.add("osn-hidden");
+    panel.querySelector("#osn-input-area").classList.add("osn-hidden");
+    panel.querySelector("#osn-btn-add").classList.add("osn-hidden");
 
     // In pop-out, align the collapsed icon with the thread subject header bar.
     // Hide until positioned to avoid a jump.
@@ -628,7 +640,7 @@ clearUndo();
   const MAX_RETRIES = 20; // ~8 seconds of attempts
 
   function tryInject() {
-    if (!isExtensionAlive() || retryCount++ > MAX_RETRIES) return;
+    if (!isExtensionAlive() || ++retryCount > MAX_RETRIES) return;
     injectPanel().then((ok) => {
       if (!ok) {
         clearTimeout(retryTimer);
@@ -651,17 +663,22 @@ clearUndo();
 
   // Single observer handles URL changes and reading pane swaps
   new MutationObserver((mutations) => {
-    // Always check for compose view — it can appear without a URL change
-    if (isComposeView()) {
+    const urlChanged = location.href !== lastUrl;
+    if (urlChanged) {
+      lastUrl = location.href;
+      // Re-evaluate compose state now that URL has changed
+      cachedIsCompose = isComposeView();
       document.getElementById("osn-panel")?.remove();
+      if (cachedIsCompose) return;
+      scheduleInject(600);
+      scheduleBadges(1200); // list re-renders after navigation
       return;
     }
 
-    if (location.href !== lastUrl) {
-      lastUrl = location.href;
+    // Check compose view using cached value — only re-query DOM when a panel
+    // appears/disappears, not on every mutation.
+    if (cachedIsCompose) {
       document.getElementById("osn-panel")?.remove();
-      scheduleInject(600);
-      scheduleBadges(1200); // list re-renders after navigation
       return;
     }
 
@@ -683,6 +700,8 @@ clearUndo();
     }
   }).observe(document.body, { childList: true, subtree: true });
 
+  // Seed compose cache before first observer tick
+  cachedIsCompose = isComposeView();
   // Migrate any old URL-encoded storage keys to decoded format
   migrateEncodedKeys();
   // Initial injection attempt

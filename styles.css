@@ -1,10 +1,12 @@
+/* Shared visibility utility — used by JS to hide/show elements without inline styles */
+#osn-panel .osn-hidden { display: none !important; }
+
 #osn-panel {
   position: relative;
   background: #feee90;
   border: none;
   border-left: 2px solid #c9a030;
   border-bottom: 2px solid #c9a030;
-  box-shadow: -3px 3px 8px rgba(180,140,0,0.15);
   border-radius: 8px;
   padding: 12px 14px;
   margin: 0 0 12px 0;
@@ -335,7 +337,6 @@
 
 #osn-textarea:focus {
   outline: none;
-  border-color: transparent;
 }
 
 /* ── Undo bar ── */
@@ -428,7 +429,7 @@
   display: none;
 }
 
-#osn-panel:not(.osn-collapsed) #osn-resize-handle {
+#osn-panel.osn-popout:not(.osn-collapsed) #osn-resize-handle {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -442,7 +443,7 @@
   opacity: 0.6;
 }
 
-#osn-panel:not(.osn-collapsed) #osn-resize-handle:hover {
+#osn-panel.osn-popout:not(.osn-collapsed) #osn-resize-handle:hover {
   opacity: 1;
   color: #7b5800;
 }
