@@ -659,12 +659,14 @@ clearUndo();
 
     if (location.href !== lastUrl) {
       lastUrl = location.href;
+      document.getElementById("osn-panel")?.remove();
       scheduleInject(600);
       scheduleBadges(1200); // list re-renders after navigation
       return;
     }
 
     if (!document.getElementById("osn-panel") || getKey() !== currentKey) {
+      if (getKey() !== currentKey) document.getElementById("osn-panel")?.remove();
       scheduleInject(400);
       return;
     }
