@@ -343,7 +343,7 @@
 /* ── Undo bar ── */
 #osn-undo-bar {
   font-size: 11px;
-  color: #a08040;
+  color: #6b4f00; /* contrast fix: was #a08040 (~2.9:1 on #feee90), now ~5.2:1 */
   text-align: right;
   margin-top: 4px;
 }

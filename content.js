@@ -204,13 +204,13 @@
     panel.setAttribute("aria-label", "Sticky Notes");
 
     panel.innerHTML = `
-      <div id="osn-header" data-tooltip="Click to collapse">
+      <div id="osn-header" tabindex="0" aria-expanded="false" data-tooltip="Click to collapse">
         <span id="osn-title"><span id="osn-title-text">Sticky Notes</span></span>
         <span id="osn-collapsed-plus" aria-hidden="true">+</span>
         <button id="osn-btn-add" aria-label="Add new note" data-tooltip="New note">+</button>
       </div>
       <div id="osn-body" role="list">
-        <span id="osn-empty">No notes yet for this thread.</span>
+        <span id="osn-empty" role="listitem">No notes yet for this thread.</span>
       </div>
       <div id="osn-undo-bar" class="osn-hidden">
         Note deleted — <button id="osn-undo-btn">Undo</button>
@@ -263,6 +263,21 @@
     panel.querySelector("#osn-header").addEventListener("click", (e) => {
       e.stopPropagation();
       if (e.target.id === "osn-btn-add") return; // handled above
+      if (collapsed) {
+        toggleCollapse();
+        const hasNotes = document.querySelectorAll(".osn-note").length > 0;
+        if (!hasNotes) showInput();
+      } else {
+        toggleCollapse();
+        hideInput();
+      }
+    });
+
+    // Keyboard collapse/expand — Enter or Space on the header itself (not a child button)
+    panel.querySelector("#osn-header").addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      if (e.target !== e.currentTarget) return; // child button handles its own keys
+      e.preventDefault();
       if (collapsed) {
         toggleCollapse();
         const hasNotes = document.querySelectorAll(".osn-note").length > 0;
@@ -328,6 +343,7 @@
     const addBtn = document.getElementById("osn-btn-add");
     // Use the panel's own class rather than isPopout() — more reliable with match_origin_as_fallback
     const panelIsPopout = panel?.classList.contains("osn-popout");
+    document.getElementById("osn-header")?.setAttribute("aria-expanded", collapsed ? "false" : "true");
     if (collapsed) {
       panel?.classList.add("osn-collapsed");
       if (panelIsPopout) {
@@ -521,7 +537,7 @@
     body.innerHTML = "";
 
     if (!notes.length) {
-      body.innerHTML = '<span id="osn-empty">No notes yet for this thread.</span>';
+      body.innerHTML = '<span id="osn-empty" role="listitem">No notes yet for this thread.</span>';
       return;
     }
 
