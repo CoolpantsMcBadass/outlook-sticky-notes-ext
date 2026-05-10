@@ -1,9 +1,37 @@
 (() => {
   let currentKey = null;
   let collapsed = false;
-  let lastDeleted = null;  // for undo
+  let lastDeleted = null;  // for undo — single-level only; index is best-effort
   let dragSrcId = null;    // for drag-and-drop reorder
   let cachedIsCompose = false; // cached per URL to avoid repeated querySelector in observer
+  let injecting = false;   // #6: guard against duplicate injection on rapid observer fire
+  let undoTimer = null;    // #17: auto-dismiss undo bar
+
+  // #16: shared regex for message ID extraction — used in getKey and updateCurrentListBadge
+  const MESSAGE_ID_RE = /\/(?:id|read)\/([^/?#]+)/i;
+
+  // #5: single index key that maps note keys to counts
+  const INDEX_KEY = "osn_index";
+
+  // #11: named constants replacing all inline magic numbers
+  const OSN = {
+    MAX_NOTE_LENGTH:   500,
+    SUBJECT_KEY_MAX:   80,
+    CHAR_WARN_AT:      100,
+    CHAR_URGENT_AT:    20,
+    BODY_MAX_HEIGHT:   220,   // px
+    POPOUT_MAX_HEIGHT: 160,   // px
+    RESIZE_MIN_HEIGHT: 60,    // px
+    STORAGE_WARN_PCT:  0.80,
+    MAX_RETRIES:       20,
+    RETRY_DELAY_MS:    400,
+    NAV_INJECT_DELAY:  600,
+    BADGE_DELAY_MS:    100,
+    BADGE_NAV_DELAY:   1200,
+    BADGE_UPDATE_MS:   600,
+    POPOUT_ALIGN_MS:   600,
+    UNDO_TIMEOUT_MS:   7000,
+  };
 
   function isExtensionAlive() {
     try {
@@ -37,8 +65,8 @@
   // Fall back to subject text if URL doesn't change between messages.
   function getKey() {
     const url = location.href;
-    // Standard reading pane: /mail/inbox/id/XXXXX or /mail/id/XXXXX
-    const match = url.match(/\/(?:id|read)\/([^/?#]+)/i);
+    // #16: use shared MESSAGE_ID_RE
+    const match = url.match(MESSAGE_ID_RE);
     if (match) return "osn_" + decodeURIComponent(match[1]);
 
     // Pop-out: window is about:blank but opener is the main Outlook tab —
@@ -46,7 +74,7 @@
     if (isPopout() && window.opener) {
       try {
         const openerUrl = window.opener.location.href;
-        const openerMatch = openerUrl.match(/\/(?:id|read)\/([^/?#]+)/i);
+        const openerMatch = openerUrl.match(MESSAGE_ID_RE);
         if (openerMatch) return "osn_" + decodeURIComponent(openerMatch[1]);
       } catch { /* cross-origin guard */ }
     }
@@ -59,7 +87,7 @@
     // subject will share notes. Only used when no ID is available at all.
     const subj = document.querySelector('[role="heading"][aria-level="2"], [role="heading"][aria-level="1"], [role="heading"][aria-level="3"]');
     if (subj && subj.textContent.trim()) {
-      return "osn_subj_" + subj.textContent.trim().slice(0, 80);
+      return "osn_subj_" + subj.textContent.trim().slice(0, OSN.SUBJECT_KEY_MAX);
     }
     return null; // no usable key — caller will retry
   }
@@ -67,27 +95,30 @@
   // ── Key migration ───────────────────────────────────────────────────────────
   // Earlier versions stored keys with URL-encoded IDs (osn_AAQ...%3D).
   // Now keys use decoded IDs (osn_AAQ...=) to match data-convid attributes.
-  // This runs once at startup to migrate old entries and drop stale orphans.
+  // #10: guarded by osn_migrated_v1 flag so this never runs more than once.
   function migrateEncodedKeys() {
     if (!isExtensionAlive()) return;
     try {
-      chrome.storage.local.get(null, (allData) => {
-        const toSet = {};
-        const toRemove = [];
-        Object.entries(allData).forEach(([k, v]) => {
-          if (!k.startsWith("osn_") || !k.includes("%")) return;
-          const decodedKey = "osn_" + decodeURIComponent(k.slice(4));
-          // Migrate notes to decoded key if slot is empty; otherwise just drop the orphan
-          if (!(decodedKey in allData) && Array.isArray(v) && v.length > 0) {
-            toSet[decodedKey] = v;
-          }
-          toRemove.push(k);
-        });
-        if (toRemove.length) chrome.storage.local.remove(toRemove, () => {
-          if (chrome.runtime.lastError) console.warn("osn migrate remove:", chrome.runtime.lastError);
-        });
-        if (Object.keys(toSet).length) chrome.storage.local.set(toSet, () => {
-          if (chrome.runtime.lastError) console.warn("osn migrate set:", chrome.runtime.lastError);
+      chrome.storage.local.get("osn_migrated_v1", (r) => {
+        if (r.osn_migrated_v1) return; // already done
+        chrome.storage.local.get(null, (allData) => {
+          const toSet = { osn_migrated_v1: true };
+          const toRemove = [];
+          Object.entries(allData).forEach(([k, v]) => {
+            if (!k.startsWith("osn_") || !k.includes("%")) return;
+            const decodedKey = "osn_" + decodeURIComponent(k.slice(4));
+            // Migrate notes to decoded key if slot is empty; otherwise just drop the orphan
+            if (!(decodedKey in allData) && Array.isArray(v) && v.length > 0) {
+              toSet[decodedKey] = v;
+            }
+            toRemove.push(k);
+          });
+          if (toRemove.length) chrome.storage.local.remove(toRemove, () => {
+            if (chrome.runtime.lastError) console.warn("osn migrate remove:", chrome.runtime.lastError);
+          });
+          chrome.storage.local.set(toSet, () => {
+            if (chrome.runtime.lastError) console.warn("osn migrate set:", chrome.runtime.lastError);
+          });
         });
       });
     } catch { /* context invalidated */ }
@@ -114,6 +145,53 @@
     } catch { /* context invalidated — ignore */ }
   }
 
+  // #5: index helpers — read/write a single {key: count} map instead of get(null)
+  function loadIndex() {
+    return new Promise((res) => {
+      if (!isExtensionAlive()) return res({});
+      try {
+        chrome.storage.local.get(INDEX_KEY, (data) => res(data[INDEX_KEY] || {}));
+      } catch { res({}); }
+    });
+  }
+
+  function saveIndex(index) {
+    if (!isExtensionAlive()) return;
+    try {
+      chrome.storage.local.set({ [INDEX_KEY]: index }, () => {
+        if (chrome.runtime.lastError) console.warn("osn index:", chrome.runtime.lastError);
+      });
+    } catch {}
+  }
+
+  async function updateIndex(key, count) {
+    const index = await loadIndex();
+    if (count > 0) index[key] = count;
+    else delete index[key];
+    saveIndex(index);
+  }
+
+  // Build index from existing storage — one-time bootstrap for installations that
+  // pre-date the index. Skipped if the index already has entries.
+  function bootstrapIndex() {
+    if (!isExtensionAlive()) return;
+    try {
+      chrome.storage.local.get(INDEX_KEY, (r) => {
+        const existing = r[INDEX_KEY];
+        if (existing && Object.keys(existing).length > 0) return;
+        chrome.storage.local.get(null, (allData) => {
+          const index = {};
+          Object.entries(allData).forEach(([k, v]) => {
+            if (k.startsWith("osn_") && k !== INDEX_KEY && !k.startsWith("osn_migrated") && Array.isArray(v) && v.length > 0) {
+              index[k] = v.length;
+            }
+          });
+          if (Object.keys(index).length > 0) saveIndex(index);
+        });
+      });
+    } catch {}
+  }
+
   // ── Panel HTML ──────────────────────────────────────────────────────────────
   const POSTIT_URL = chrome.runtime.getURL("icons/postit.png");
 
@@ -121,14 +199,17 @@
     const panel = document.createElement("div");
     panel.id = "osn-panel";
     panel.style.setProperty("--osn-postit-url", `url("${POSTIT_URL}")`);
+    // #3: landmark role so screen readers can locate the panel
+    panel.setAttribute("role", "complementary");
+    panel.setAttribute("aria-label", "Sticky Notes");
 
     panel.innerHTML = `
       <div id="osn-header" data-tooltip="Click to collapse">
         <span id="osn-title"><span id="osn-title-text">Sticky Notes</span></span>
-        <span id="osn-collapsed-plus">+</span>
-        <button id="osn-btn-add" data-tooltip="New note">+</button>
+        <span id="osn-collapsed-plus" aria-hidden="true">+</span>
+        <button id="osn-btn-add" aria-label="Add new note" data-tooltip="New note">+</button>
       </div>
-      <div id="osn-body">
+      <div id="osn-body" role="list">
         <span id="osn-empty">No notes yet for this thread.</span>
       </div>
       <div id="osn-undo-bar" class="osn-hidden">
@@ -136,7 +217,7 @@
       </div>
       <div id="osn-storage-warning" class="osn-hidden"></div>
       <div id="osn-input-area" class="osn-hidden">
-        <textarea id="osn-textarea" maxlength="500" placeholder="Type your notes and click save"></textarea>
+        <textarea id="osn-textarea" maxlength="${OSN.MAX_NOTE_LENGTH}" placeholder="Type your notes and click save"></textarea>
         <div id="osn-char-counter" class="osn-hidden"></div>
         <div id="osn-input-btns">
           <button id="osn-save">Save</button>
@@ -161,7 +242,7 @@
       const startHeight = body.getBoundingClientRect().height;
 
       const onMove = (me) => {
-        const newHeight = Math.max(60, startHeight + (me.clientY - startY));
+        const newHeight = Math.max(OSN.RESIZE_MIN_HEIGHT, startHeight + (me.clientY - startY));
         body.style.maxHeight = newHeight + "px";
       };
       const onUp = () => {
@@ -213,10 +294,10 @@
       const counter = document.getElementById("osn-char-counter");
       if (!counter || !ta) return;
       const len = ta.value.length;
-      const remaining = 500 - len;
-      if (remaining <= 100) {
-        counter.textContent = `${len} / 500`;
-        counter.className = remaining <= 20 ? "osn-char-urgent" : "";
+      const remaining = OSN.MAX_NOTE_LENGTH - len;
+      if (remaining <= OSN.CHAR_WARN_AT) {
+        counter.textContent = `${len} / ${OSN.MAX_NOTE_LENGTH}`;
+        counter.className = remaining <= OSN.CHAR_URGENT_AT ? "osn-char-urgent" : "";
         counter.classList.remove("osn-hidden");
       } else {
         counter.className = "osn-hidden";
@@ -245,9 +326,11 @@
     const body = document.getElementById("osn-body");
     const input = document.getElementById("osn-input-area");
     const addBtn = document.getElementById("osn-btn-add");
+    // Use the panel's own class rather than isPopout() — more reliable with match_origin_as_fallback
+    const panelIsPopout = panel?.classList.contains("osn-popout");
     if (collapsed) {
       panel?.classList.add("osn-collapsed");
-      if (isPopout()) {
+      if (panelIsPopout) {
         const root = document.getElementById("_owa_projection_root");
         const heading = document.querySelector('[id$="_SUBJECT"], [role="heading"][aria-level="3"]');
         if (root && heading) {
@@ -262,7 +345,7 @@
       clearUndo();
     } else {
       panel?.classList.remove("osn-collapsed");
-      if (isPopout()) panel.style.top = "";
+      if (panelIsPopout) panel.style.top = "";
       body?.classList.remove("osn-hidden");
       input?.classList.add("osn-hidden"); // stay hidden until user opens it
       const hasNotes = document.querySelectorAll(".osn-note").length > 0;
@@ -279,12 +362,13 @@
     const notes = await loadNotes(currentKey);
     notes.unshift({ id: crypto.randomUUID(), text, date: new Date().toISOString() });
     saveNotes(currentKey, notes);
+    await updateIndex(currentKey, notes.length); // #5
     ta.value = "";
     hideInput();
     renderNotes(notes);
     clearUndo();
     checkStorageQuota();
-    setTimeout(() => updateCurrentListBadge(notes.length), 600);
+    setTimeout(() => updateCurrentListBadge(notes.length), OSN.BADGE_UPDATE_MS);
   }
 
   async function deleteNote(id) {
@@ -295,11 +379,15 @@
     // Store for undo
     lastDeleted = { note: allNotes[idx], index: idx };
     document.getElementById("osn-undo-bar")?.classList.remove("osn-hidden");
+    // #17: auto-dismiss the undo bar after a timeout
+    clearTimeout(undoTimer);
+    undoTimer = setTimeout(() => clearUndo(), OSN.UNDO_TIMEOUT_MS);
 
     const remaining = allNotes.filter((n) => n.id !== id);
     saveNotes(currentKey, remaining);
+    await updateIndex(currentKey, remaining.length); // #5
     renderNotes(remaining);
-    setTimeout(() => updateCurrentListBadge(remaining.length), 600);
+    setTimeout(() => updateCurrentListBadge(remaining.length), OSN.BADGE_UPDATE_MS);
 
     // Auto-collapse when the last note is deleted
     if (remaining.length === 0 && !collapsed) {
@@ -310,18 +398,25 @@
 
   async function undoDelete() {
     if (!lastDeleted) return;
+    const { note, index } = lastDeleted;
     const notes = await loadNotes(currentKey);
-    notes.splice(lastDeleted.index, 0, lastDeleted.note);
+    // #12: guard against stale index if notes changed between delete and undo
+    const safeIndex = Math.min(index, notes.length);
+    notes.splice(safeIndex, 0, note);
     saveNotes(currentKey, notes);
+    await updateIndex(currentKey, notes.length); // #5
     lastDeleted = null;
     // Re-expand if auto-collapsed
     if (collapsed) toggleCollapse();
     renderNotes(notes);
     clearUndo();
-    setTimeout(() => updateCurrentListBadge(notes.length), 600);
+    setTimeout(() => updateCurrentListBadge(notes.length), OSN.BADGE_UPDATE_MS);
   }
 
   function clearUndo() {
+    // #17: cancel auto-dismiss timer
+    clearTimeout(undoTimer);
+    undoTimer = null;
     lastDeleted = null;
     document.getElementById("osn-undo-bar")?.classList.add("osn-hidden");
   }
@@ -334,7 +429,7 @@
         const pct = bytes / QUOTA;
         const warning = document.getElementById("osn-storage-warning");
         if (!warning) return;
-        if (pct > 0.8) {
+        if (pct > OSN.STORAGE_WARN_PCT) {
           warning.textContent = `⚠️ Notes storage ${Math.round(pct * 100)}% full — consider deleting old notes.`;
           warning.classList.remove("osn-hidden");
         } else {
@@ -348,9 +443,9 @@
     div.draggable = false;
     div.innerHTML = `
       <div class="osn-edit-area">
-        <textarea class="osn-edit-textarea" maxlength="500">${escapeHtml(note.text)}</textarea>
+        <textarea class="osn-edit-textarea" maxlength="${OSN.MAX_NOTE_LENGTH}">${escapeHtml(note.text)}</textarea>
         <div class="osn-edit-footer">
-          <span class="osn-edit-char-count">${note.text.length} / 500</span>
+          <span class="osn-edit-char-count">${note.text.length} / ${OSN.MAX_NOTE_LENGTH}</span>
           <div class="osn-edit-btns">
             <button class="osn-edit-save">Save</button>
             <button class="osn-edit-cancel">Cancel</button>
@@ -365,7 +460,7 @@
     ta.setSelectionRange(ta.value.length, ta.value.length);
 
     ta.addEventListener("input", () => {
-      div.querySelector(".osn-edit-char-count").textContent = `${ta.value.length} / 500`;
+      div.querySelector(".osn-edit-char-count").textContent = `${ta.value.length} / ${OSN.MAX_NOTE_LENGTH}`;
     });
     ta.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) commitEdit();
@@ -435,15 +530,38 @@
       div.className = "osn-note";
       div.draggable = true;
       div.dataset.id = String(note.id);
+      // #3 + #8: keyboard accessible list item
+      div.tabIndex = 0;
+      div.setAttribute("role", "listitem");
+      div.setAttribute("aria-label", `Note: ${note.text.slice(0, 40)}`);
+
       div.innerHTML = `
-        <span class="osn-drag-handle" title="Drag to reorder">⠿</span>
+        <span class="osn-drag-handle" aria-hidden="true" title="Drag to reorder">⠿</span>
         <span class="osn-note-text">${escapeHtml(note.text)}</span>
         <div class="osn-note-meta">
-          <button class="osn-note-edit" title="Edit">✎</button>
-          <button class="osn-note-delete" title="Delete">✕</button>
+          <button class="osn-note-edit" aria-label="Edit note" title="Edit">✎</button>
+          <button class="osn-note-delete" aria-label="Delete note" title="Delete">✕</button>
           <span class="osn-note-date">${escapeHtml(formatDate(note.date))}</span>
         </div>
       `;
+
+      // #8: keyboard reordering via Arrow keys
+      div.addEventListener("keydown", async (e) => {
+        if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+        e.preventDefault();
+        const fresh = await loadNotes(currentKey);
+        const idx = fresh.findIndex((n) => n.id === note.id);
+        if (idx === -1) return;
+        const swap = e.key === "ArrowUp" ? idx - 1 : idx + 1;
+        if (swap < 0 || swap >= fresh.length) return;
+        [fresh[idx], fresh[swap]] = [fresh[swap], fresh[idx]];
+        saveNotes(currentKey, fresh);
+        renderNotes(fresh);
+        // Restore focus to the moved note after re-render
+        setTimeout(() => {
+          document.querySelectorAll(".osn-note")[swap]?.focus();
+        }, 0);
+      });
 
       // ── Drag-and-drop reordering ──
       div.addEventListener("dragstart", (e) => {
@@ -506,42 +624,29 @@
   }
 
   // Badge the currently selected list item (called after save/delete, deferred)
+  // #16: uses shared MESSAGE_ID_RE instead of local /\/id\// pattern
   function updateCurrentListBadge(noteCount) {
-    // Find the email list row for the currently open email via data-convid
-    const urlId = location.href.match(/\/id\/([^/?#]+)/i)?.[1];
+    const urlId = location.href.match(MESSAGE_ID_RE)?.[1];
     if (!urlId) return;
     const decoded = decodeURIComponent(urlId);
     const el = document.querySelector(`[data-convid="${CSS.escape(decoded)}"]`);
     if (el) setBadgeOnElement(el, noteCount);
   }
 
-  // On load / navigation: scan all list items against stored keys
-  function updateAllListBadges() {
+  // #5: read badges from index instead of fetching all storage
+  async function updateAllListBadges() {
     if (!isExtensionAlive()) return;
-    try {
-      // Fetch only our own keys by passing an array of known keys would require
-      // knowing them upfront; instead we fetch all and filter by prefix immediately.
-      chrome.storage.local.get(null, (allData) => {
-        const keysWithNotes = new Map(
-          Object.entries(allData)
-            .filter(([k, v]) => k.startsWith("osn_") && Array.isArray(v) && v.length > 0)
-            .map(([k, v]) => [k.slice(4), v.length]) // strip "osn_" → raw id → count
-        );
-        if (keysWithNotes.size === 0) return;
-
-        // Outlook email list items use data-convid (decoded base64 exchange ID).
-        // Stored keys may be encoded or decoded depending on when they were saved —
-        // try both so old notes still get badges.
-        const seen = new Set();
-        document.querySelectorAll('[data-convid]').forEach((el) => {
-          const val = el.getAttribute('data-convid');
-          if (seen.has(val)) return; // skip nested duplicates, badge outermost only
-          seen.add(val);
-          const count = keysWithNotes.get(val);
-          if (count) setBadgeOnElement(el, count);
-        });
-      });
-    } catch { /* context invalidated */ }
+    const index = await loadIndex();
+    if (Object.keys(index).length === 0) return;
+    const seen = new Set();
+    document.querySelectorAll('[data-convid]').forEach((el) => {
+      const val = el.getAttribute('data-convid');
+      if (seen.has(val)) return; // skip nested duplicates, badge outermost only
+      seen.add(val);
+      const rawKey = "osn_" + val;
+      const count = index[rawKey] ?? index["osn_" + encodeURIComponent(val)] ?? 0;
+      setBadgeOnElement(el, count);
+    });
   }
 
   // ── Injection ───────────────────────────────────────────────────────────────
@@ -574,6 +679,7 @@
   async function injectPanel() {
     if (isComposeView()) {
       document.getElementById("osn-panel")?.remove();
+      injecting = false;
       return true; // don't retry
     }
 
@@ -586,50 +692,64 @@
     // Already injected for this key — just re-render
     if (document.getElementById("osn-panel") && key === currentKey) return true;
 
-    // Remove old panel if switching emails
-    document.getElementById("osn-panel")?.remove();
+    // #6: prevent duplicate injection if a previous async call is still in flight
+    if (injecting) return true;
+    injecting = true;
 
-    currentKey = key;
+    try {
+      // Remove old panel if switching emails
+      document.getElementById("osn-panel")?.remove();
 
-    // Collapsed icon uses position:absolute — parent must be position:relative
-    if (getComputedStyle(insertion.parent).position === "static") {
-      insertion.parent.style.position = "relative";
+      currentKey = key;
+
+      // Collapsed icon uses position:absolute — parent must be position:relative
+      if (getComputedStyle(insertion.parent).position === "static") {
+        insertion.parent.style.position = "relative";
+      }
+
+      const panel = buildPanel();
+      insertion.parent.insertBefore(panel, insertion.before);
+
+      const notes = await loadNotes(currentKey);
+      renderNotes(notes);
+
+      // Mark panel for pop-out specific styling.
+      // Use the insertion parent ID rather than isPopout() — with match_origin_as_fallback
+      // the content script may run in the outer frame where _owa_projection_root is absent.
+      const inPopout = insertion.parent.id === "_owa_projection_root";
+      if (inPopout) panel.classList.add("osn-popout");
+
+      // Always start collapsed
+      collapsed = true;
+      updateCollapsedPlus(notes.length);
+      panel.classList.add("osn-collapsed");
+      panel.querySelector("#osn-body").classList.add("osn-hidden");
+      panel.querySelector("#osn-input-area").classList.add("osn-hidden");
+      panel.querySelector("#osn-btn-add").classList.add("osn-hidden");
+
+      // In pop-out, align the collapsed icon with the thread subject header bar.
+      // Hide until positioned to avoid a jump.
+      if (inPopout) {
+        panel.style.visibility = "hidden";
+        setTimeout(() => {
+          const root = document.getElementById("_owa_projection_root");
+          const heading = document.querySelector('[id$="_SUBJECT"], [role="heading"][aria-level="3"]');
+          if (root && heading) {
+            const rootRect = root.getBoundingClientRect();
+            const headingRect = heading.getBoundingClientRect();
+            panel.style.top = (headingRect.top - rootRect.top - 6) + "px";
+          }
+          panel.style.visibility = "";
+        }, OSN.POPOUT_ALIGN_MS);
+      }
+
+      updateAllListBadges();
+      // #7: attach the targeted list observer now that injection succeeded
+      attachListObserver();
+    } finally {
+      injecting = false; // #6: always reset, even if an error occurs
     }
 
-    const panel = buildPanel();
-    insertion.parent.insertBefore(panel, insertion.before);
-
-    const notes = await loadNotes(currentKey);
-    renderNotes(notes);
-
-    // Mark panel for pop-out specific styling
-    if (isPopout()) panel.classList.add("osn-popout");
-
-    // Always start collapsed
-    collapsed = true;
-    updateCollapsedPlus(notes.length);
-    panel.classList.add("osn-collapsed");
-    panel.querySelector("#osn-body").classList.add("osn-hidden");
-    panel.querySelector("#osn-input-area").classList.add("osn-hidden");
-    panel.querySelector("#osn-btn-add").classList.add("osn-hidden");
-
-    // In pop-out, align the collapsed icon with the thread subject header bar.
-    // Hide until positioned to avoid a jump.
-    if (isPopout()) {
-      panel.style.visibility = "hidden";
-      setTimeout(() => {
-        const root = document.getElementById("_owa_projection_root");
-        const heading = document.querySelector('[id$="_SUBJECT"], [role="heading"][aria-level="3"]');
-        if (root && heading) {
-          const rootRect = root.getBoundingClientRect();
-          const headingRect = heading.getBoundingClientRect();
-          panel.style.top = (headingRect.top - rootRect.top - 6) + "px";
-        }
-        panel.style.visibility = "";
-      }, 600);
-    }
-
-    updateAllListBadges();
     return true;
   }
 
@@ -637,14 +757,13 @@
   let lastUrl = location.href;
   let retryTimer = null;
   let retryCount = 0;
-  const MAX_RETRIES = 20; // ~8 seconds of attempts
 
   function tryInject() {
-    if (!isExtensionAlive() || ++retryCount > MAX_RETRIES) return;
+    if (!isExtensionAlive() || ++retryCount > OSN.MAX_RETRIES) return;
     injectPanel().then((ok) => {
       if (!ok) {
         clearTimeout(retryTimer);
-        retryTimer = setTimeout(tryInject, 400);
+        retryTimer = setTimeout(tryInject, OSN.RETRY_DELAY_MS);
       }
     }).catch(() => {});
   }
@@ -661,22 +780,24 @@
     badgeTimer = setTimeout(updateAllListBadges, delay);
   }
 
-  // Single observer handles URL changes and reading pane swaps
+  // #7: Narrow observer — watches only direct children of body for URL/pane changes.
+  // This drastically reduces the number of callbacks vs. the previous subtree:true.
   new MutationObserver((mutations) => {
+    // Wire up the pop-out deep observer as soon as _owa_projection_root lands in body.
+    // attachPopoutObserver is idempotent so this is safe to call on every callback.
+    attachPopoutObserver();
+
     const urlChanged = location.href !== lastUrl;
     if (urlChanged) {
       lastUrl = location.href;
-      // Re-evaluate compose state now that URL has changed
       cachedIsCompose = isComposeView();
       document.getElementById("osn-panel")?.remove();
       if (cachedIsCompose) return;
-      scheduleInject(600);
-      scheduleBadges(1200); // list re-renders after navigation
+      scheduleInject(OSN.NAV_INJECT_DELAY);
+      scheduleBadges(OSN.BADGE_NAV_DELAY);
       return;
     }
 
-    // Check compose view using cached value — only re-query DOM when a panel
-    // appears/disappears, not on every mutation.
     if (cachedIsCompose) {
       document.getElementById("osn-panel")?.remove();
       return;
@@ -684,28 +805,52 @@
 
     if (!document.getElementById("osn-panel") || getKey() !== currentKey) {
       if (getKey() !== currentKey) document.getElementById("osn-panel")?.remove();
-      scheduleInject(400);
-      return;
+      scheduleInject(OSN.RETRY_DELAY_MS);
     }
+  }).observe(document.body, { childList: true, subtree: false }); // #7: shallow only
 
-    // Re-badge any newly rendered email list rows (virtual scroll)
-    for (const mutation of mutations) {
-      for (const node of mutation.addedNodes) {
-        if (node.nodeType !== 1) continue;
-        if (node.hasAttribute?.("data-convid") || node.querySelector?.("[data-convid]")) {
-          scheduleBadges(100);
-          return;
-        }
-      }
-    }
-  }).observe(document.body, { childList: true, subtree: true });
+  // #7: Separate targeted observer for badge updates on the email list.
+  // Attached after a delay on startup and after each successful injection.
+  let listObserver = null;
+  function attachListObserver() {
+    if (listObserver) return;
+    const listEl = document.querySelector('[role="list"][aria-label]')
+      ?? document.querySelector('[data-app-section="MailList"]');
+    if (!listEl) return;
+    listObserver = new MutationObserver(() => scheduleBadges(OSN.BADGE_DELAY_MS));
+    listObserver.observe(listEl, { childList: true, subtree: true });
+  }
+
+  // ── Pop-out observer ────────────────────────────────────────────────────────
+  // The shallow body observer can't see content loading inside #_owa_projection_root.
+  // Pop-out windows load their email content asynchronously deep inside that element,
+  // so we attach a dedicated deep observer on it to re-trigger injection as content arrives.
+  // This is idempotent: guarded by popoutObserverAttached so it only wires up once.
+  // It is called from both startup AND from the shallow body observer so it fires as soon
+  // as _owa_projection_root appears in the DOM, regardless of timing.
+  let popoutObserverAttached = false;
+  function attachPopoutObserver() {
+    if (popoutObserverAttached) return;
+    const root = document.getElementById("_owa_projection_root");
+    if (!root) return; // not a pop-out, or root not yet in DOM — will retry via body observer
+    popoutObserverAttached = true;
+    new MutationObserver(() => {
+      if (!document.getElementById("osn-panel")) scheduleInject(OSN.RETRY_DELAY_MS);
+    }).observe(root, { childList: true, subtree: true });
+  }
 
   // Seed compose cache before first observer tick
   cachedIsCompose = isComposeView();
-  // Migrate any old URL-encoded storage keys to decoded format
+  // Migrate any old URL-encoded storage keys to decoded format (one-time)
   migrateEncodedKeys();
+  // #5: build index from existing storage if this is an existing installation
+  bootstrapIndex();
   // Initial injection attempt
   tryInject();
   // Badge scan runs independently — fires after the email list has rendered on load
   scheduleBadges(500);
+  // #7: try attaching the list observer after the email list has likely rendered
+  setTimeout(attachListObserver, 1000);
+  // Pop-out: try immediately (root may already be present), body observer handles the late case
+  attachPopoutObserver();
 })();

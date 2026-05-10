@@ -33,7 +33,7 @@
   cursor: pointer;
   overflow: visible;
   margin: 0;
-  z-index: 10;
+  z-index: 1000; /* #13: needs to clear Outlook's own UI layers */
 }
 
 #osn-panel.osn-collapsed #osn-header {
@@ -108,7 +108,7 @@
 #osn-title {
   font-size: 13px;
   font-weight: 700;
-  color: #a07828;
+  color: #5c3a00; /* #9: was #a07828 (~3.2:1), now ~6.1:1 on #feee90 */
   letter-spacing: 0.2px;
   flex: 1;
 }
@@ -176,7 +176,7 @@
 }
 
 #osn-empty {
-  color: #a08040;
+  color: #6b4f00; /* #9: was #a08040 (~2.9:1 on #feee90), now ~5.2:1 */
   font-size: 12px;
   font-style: italic;
 }
@@ -225,7 +225,7 @@
 
 .osn-note-date {
   font-size: 10px;
-  color: #a08040;
+  color: #6b4f00; /* #9: was #a08040 (~2.9:1 on #fef5c0), now ~5.2:1 */
 }
 
 .osn-note-edit {
@@ -269,7 +269,7 @@
   color: #5a4010;
 }
 
-.osn-edit-textarea:focus { outline: none; border-color: #5c4000; }
+.osn-edit-textarea:focus { outline: none; border-color: #5c4000; box-shadow: 0 0 0 2px #7b5800; } /* #4: visible focus ring */
 
 .osn-edit-footer {
   display: flex;
@@ -280,7 +280,7 @@
 
 .osn-edit-char-count {
   font-size: 10px;
-  color: #a08040;
+  color: #6b4f00; /* #9: was #a08040, contrast fix */
 }
 
 .osn-edit-btns { display: flex; gap: 5px; }
@@ -337,6 +337,7 @@
 
 #osn-textarea:focus {
   outline: none;
+  box-shadow: 0 0 0 2px #7b5800; /* #4: visible focus ring replacing outline */
 }
 
 /* ── Undo bar ── */
@@ -372,7 +373,7 @@
 /* ── Character counter ── */
 #osn-char-counter {
   font-size: 10px;
-  color: #a08040;
+  color: #6b4f00; /* #9: was #a08040, contrast fix */
   text-align: right;
 }
 
@@ -429,7 +430,7 @@
   display: none;
 }
 
-#osn-panel.osn-popout:not(.osn-collapsed) #osn-resize-handle {
+#osn-panel:not(.osn-collapsed) #osn-resize-handle {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -443,7 +444,7 @@
   opacity: 0.6;
 }
 
-#osn-panel.osn-popout:not(.osn-collapsed) #osn-resize-handle:hover {
+#osn-panel:not(.osn-collapsed) #osn-resize-handle:hover {
   opacity: 1;
   color: #7b5800;
 }
