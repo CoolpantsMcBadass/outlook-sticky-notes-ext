@@ -83,7 +83,8 @@
   position: relative;
 }
 
-#osn-header[data-tooltip]:hover::after {
+#osn-header[data-tooltip]:hover::after,
+#osn-header[data-tooltip]:focus::after {
   content: attr(data-tooltip);
   position: absolute;
   bottom: calc(100% + 6px);
@@ -101,7 +102,8 @@
   animation: osn-tooltip-in 0s 0.4s forwards;
 }
 
-#osn-header[data-tooltip]:has(#osn-btn-add:hover)::after {
+/* Suppress header tooltip when the + button is hovered or focused */
+#osn-header[data-tooltip]:has(#osn-btn-add:is(:hover, :focus))::after {
   display: none;
 }
 
@@ -136,7 +138,8 @@
   position: relative;
 }
 
-#osn-btn-add[data-tooltip]:hover::after {
+#osn-btn-add[data-tooltip]:hover::after,
+#osn-btn-add[data-tooltip]:focus::after {
   content: attr(data-tooltip);
   position: absolute;
   bottom: calc(100% + 6px);

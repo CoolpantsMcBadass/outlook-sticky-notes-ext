@@ -663,7 +663,7 @@
       seen.add(val);
       const rawKey = "osn_" + val;
       const count = index[rawKey] ?? index["osn_" + encodeURIComponent(val)] ?? 0;
-      setBadgeOnElement(el, count);
+      if (count > 0) setBadgeOnElement(el, count); // skip zero-count rows — no DOM query needed
     });
   }
 
