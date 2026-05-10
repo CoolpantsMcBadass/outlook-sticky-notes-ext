@@ -71,7 +71,3 @@ outlook-sticky-notes-ext/
 - Uses `match_origin_as_fallback: true` to support Outlook pop-out windows, which render email content in opaque-origin iframes
 - Notes are keyed by decoded conversation ID from the URL, with automatic migration from legacy URL-encoded keys
 - Email list badges are rebadged dynamically via `MutationObserver` to handle Outlook's virtual scroll
-
-## License
-
-MIT
