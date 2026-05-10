@@ -1,41 +1,44 @@
 (() => {
   let currentKey = null;
   let collapsed = false;
-  let lastDeleted = null;  // for undo — single-level only; index is best-effort
+  let lastDeleted = null;  // for undo — single-level only; index position is best-effort
   let dragSrcId = null;    // for drag-and-drop reorder
   let cachedIsCompose = false; // cached per URL to avoid repeated querySelector in observer
-  let injecting = false;   // #6: guard against duplicate injection on rapid observer fire
-  let undoTimer = null;    // #17: auto-dismiss undo bar
+  let injecting = false;   // guard against duplicate injection on rapid observer fire
+  let undoTimer = null;    // tracks the auto-dismiss timeout for the undo bar
 
-  // #16: shared regex for message ID extraction — used in getKey and updateCurrentListBadge
+  // Matches Outlook's /id/<msgId> and /read/<msgId> URL patterns.
+  // Shared between getKey() and updateCurrentListBadge() to avoid duplication.
   const MESSAGE_ID_RE = /\/(?:id|read)\/([^/?#]+)/i;
 
-  // #5: single index key that maps note keys to counts
+  // Storage key for the note-count index — a single {noteKey: count} map that
+  // lets us badge email list rows without reading every note array individually.
   const INDEX_KEY = "osn_index";
 
-  // #11: named constants replacing all inline magic numbers
+  // All timing and sizing constants in one place.
   const OSN = {
     MAX_NOTE_LENGTH:   500,
     SUBJECT_KEY_MAX:   80,
-    CHAR_WARN_AT:      100,
-    CHAR_URGENT_AT:    20,
-    BODY_MAX_HEIGHT:   220,   // px
-    POPOUT_MAX_HEIGHT: 160,   // px
-    RESIZE_MIN_HEIGHT: 60,    // px
+    CHAR_WARN_AT:      100,  // chars remaining at which the counter appears
+    CHAR_URGENT_AT:    20,   // chars remaining at which the counter turns red
+    BODY_MAX_HEIGHT:   220,  // px
+    POPOUT_MAX_HEIGHT: 160,  // px
+    RESIZE_MIN_HEIGHT: 60,   // px
     STORAGE_WARN_PCT:  0.80,
     MAX_RETRIES:       20,
     RETRY_DELAY_MS:    400,
-    NAV_INJECT_DELAY:  600,
+    NAV_INJECT_DELAY:  600,  // ms to wait after URL change before injecting (let Outlook settle)
     BADGE_DELAY_MS:    100,
     BADGE_NAV_DELAY:   1200,
     BADGE_UPDATE_MS:   600,
-    POPOUT_ALIGN_MS:   600,
+    POPOUT_ALIGN_MS:   600,  // ms to wait before measuring DOM positions in pop-out
     UNDO_TIMEOUT_MS:   7000,
   };
 
   function isExtensionAlive() {
     try {
-      // Accessing chrome.runtime.id throws if the context is invalidated
+      // Accessing chrome.runtime.id throws if the extension context has been invalidated
+      // (e.g. after an update). Guards every storage call to prevent unhandled errors.
       return !!chrome.runtime?.id;
     } catch {
       return false;
@@ -44,9 +47,10 @@
 
   // ── Compose view detection ──────────────────────────────────────────────────
   function isComposeView() {
-    // URL-based patterns
+    // URL-based check first — fastest path
     if (/\/(compose|action\/compose|deeplink\/compose)/i.test(location.href)) return true;
-    // DOM-based: Send button + an editable To field (input/textarea) = compose
+    // DOM-based fallback: presence of both a Send button and an editable To field
+    // distinguishes compose from read even when the URL doesn't include "compose"
     const sendBtn = document.querySelector(
       '[aria-label="Send"], [title="Send"], button[data-testid*="send"], [aria-label*="Send "]'
     );
@@ -61,16 +65,19 @@
   }
 
   // ── Key extraction ──────────────────────────────────────────────────────────
-  // Use the page URL (includes message/conversation ID) as the stable key.
-  // Fall back to subject text if URL doesn't change between messages.
+  // Derives a stable per-thread storage key from the page URL or DOM.
+  // Returns null if no ID can be found yet — callers should retry.
   function getKey() {
     const url = location.href;
-    // #16: use shared MESSAGE_ID_RE
     const match = url.match(MESSAGE_ID_RE);
     if (match) return "osn_" + decodeURIComponent(match[1]);
 
-    // Pop-out: window is about:blank but opener is the main Outlook tab —
-    // read the opener's URL to get the same ID the main window uses.
+    // Pop-out windows open on about:blank, so their URL never contains a message ID.
+    // The opener is the main Outlook tab (always same-origin), so we can read its URL
+    // to derive the same key the main window uses. The try/catch is a defensive
+    // cross-origin guard — opener should always be same-origin here, but if somehow
+    // it isn't (e.g. a future Outlook architecture change), we fail silently rather
+    // than throw a cross-origin security error.
     if (isPopout() && window.opener) {
       try {
         const openerUrl = window.opener.location.href;
@@ -79,7 +86,7 @@
       } catch { /* cross-origin guard */ }
     }
 
-    // Fallback: data-convid on any element
+    // Fallback: data-convid attribute Outlook stamps on conversation rows
     const convEl = document.querySelector('[data-convid]');
     if (convEl) return "osn_" + convEl.getAttribute('data-convid');
 
@@ -95,7 +102,7 @@
   // ── Key migration ───────────────────────────────────────────────────────────
   // Earlier versions stored keys with URL-encoded IDs (osn_AAQ...%3D).
   // Now keys use decoded IDs (osn_AAQ...=) to match data-convid attributes.
-  // #10: guarded by osn_migrated_v1 flag so this never runs more than once.
+  // Guarded by osn_migrated_v1 flag so this runs only once per installation.
   function migrateEncodedKeys() {
     if (!isExtensionAlive()) return;
     try {
@@ -145,7 +152,8 @@
     } catch { /* context invalidated — ignore */ }
   }
 
-  // #5: index helpers — read/write a single {key: count} map instead of get(null)
+  // Index helpers — maintain a single {noteKey: count} map so badge updates
+  // can read one storage entry instead of scanning the entire storage space.
   function loadIndex() {
     return new Promise((res) => {
       if (!isExtensionAlive()) return res({});
@@ -199,7 +207,7 @@
     const panel = document.createElement("div");
     panel.id = "osn-panel";
     panel.style.setProperty("--osn-postit-url", `url("${POSTIT_URL}")`);
-    // #3: landmark role so screen readers can locate the panel
+    // Landmark role lets screen readers jump directly to the sticky notes panel
     panel.setAttribute("role", "complementary");
     panel.setAttribute("aria-label", "Sticky Notes");
 
@@ -341,7 +349,9 @@
     const body = document.getElementById("osn-body");
     const input = document.getElementById("osn-input-area");
     const addBtn = document.getElementById("osn-btn-add");
-    // Use the panel's own class rather than isPopout() — more reliable with match_origin_as_fallback
+    // Check the panel's own class rather than calling isPopout() — when
+    // match_origin_as_fallback causes the script to run in a sub-frame,
+    // _owa_projection_root may not be present in that frame's document.
     const panelIsPopout = panel?.classList.contains("osn-popout");
     document.getElementById("osn-header")?.setAttribute("aria-expanded", collapsed ? "false" : "true");
     if (collapsed) {
@@ -378,7 +388,7 @@
     const notes = await loadNotes(currentKey);
     notes.unshift({ id: crypto.randomUUID(), text, date: new Date().toISOString() });
     saveNotes(currentKey, notes);
-    await updateIndex(currentKey, notes.length); // #5
+    await updateIndex(currentKey, notes.length);
     ta.value = "";
     hideInput();
     renderNotes(notes);
@@ -392,16 +402,16 @@
     const idx = allNotes.findIndex((n) => n.id === id);
     if (idx === -1) return;
 
-    // Store for undo
+    // Store deleted note so undoDelete() can restore it
     lastDeleted = { note: allNotes[idx], index: idx };
     document.getElementById("osn-undo-bar")?.classList.remove("osn-hidden");
-    // #17: auto-dismiss the undo bar after a timeout
+    // Auto-dismiss the undo bar after a timeout so it doesn't linger indefinitely
     clearTimeout(undoTimer);
     undoTimer = setTimeout(() => clearUndo(), OSN.UNDO_TIMEOUT_MS);
 
     const remaining = allNotes.filter((n) => n.id !== id);
     saveNotes(currentKey, remaining);
-    await updateIndex(currentKey, remaining.length); // #5
+    await updateIndex(currentKey, remaining.length);
     renderNotes(remaining);
     setTimeout(() => updateCurrentListBadge(remaining.length), OSN.BADGE_UPDATE_MS);
 
@@ -416,13 +426,14 @@
     if (!lastDeleted) return;
     const { note, index } = lastDeleted;
     const notes = await loadNotes(currentKey);
-    // #12: guard against stale index if notes changed between delete and undo
+    // Clamp the insertion index in case notes were added or reordered between
+    // the delete and the undo (e.g. two tabs open to the same thread)
     const safeIndex = Math.min(index, notes.length);
     notes.splice(safeIndex, 0, note);
     saveNotes(currentKey, notes);
-    await updateIndex(currentKey, notes.length); // #5
+    await updateIndex(currentKey, notes.length);
     lastDeleted = null;
-    // Re-expand if auto-collapsed
+    // Re-expand if the panel auto-collapsed when the last note was deleted
     if (collapsed) toggleCollapse();
     renderNotes(notes);
     clearUndo();
@@ -430,7 +441,6 @@
   }
 
   function clearUndo() {
-    // #17: cancel auto-dismiss timer
     clearTimeout(undoTimer);
     undoTimer = null;
     lastDeleted = null;
@@ -440,8 +450,8 @@
   function checkStorageQuota() {
     if (!isExtensionAlive()) return;
     try {
-      // null = measure total storage used across all keys, which is correct here
-      // because QUOTA_BYTES is also a global limit, not per-key.
+      // Pass null to measure total bytes used across all keys — QUOTA_BYTES is a
+      // global limit, not per-key, so we need the global total to compute percentage.
       chrome.storage.local.getBytesInUse(null, (bytes) => {
         const QUOTA = chrome.storage.local.QUOTA_BYTES;
         const pct = bytes / QUOTA;
@@ -459,6 +469,7 @@
 
   async function startEditNote(div, note) {
     div.draggable = false;
+    // note.text is run through escapeHtml before insertion into innerHTML
     div.innerHTML = `
       <div class="osn-edit-area">
         <textarea class="osn-edit-textarea" maxlength="${OSN.MAX_NOTE_LENGTH}">${escapeHtml(note.text)}</textarea>
@@ -505,6 +516,8 @@
     }
   }
 
+  // Escapes user-supplied text before writing to innerHTML.
+  // All note content goes through this before any DOM insertion.
   function escapeHtml(str) {
     return str
       .replace(/&/g, "&amp;").replace(/</g, "&lt;")
@@ -522,6 +535,7 @@
     });
   }
 
+  // Shows note count on the collapsed icon (or + when there are no notes)
   function updateCollapsedPlus(noteCount) {
     const plus = document.getElementById("osn-collapsed-plus");
     if (!plus) return;
@@ -548,11 +562,12 @@
       div.className = "osn-note";
       div.draggable = true;
       div.dataset.id = String(note.id);
-      // #3 + #8: keyboard accessible list item
+      // tabIndex and role make each note keyboard-reachable and screen-reader accessible
       div.tabIndex = 0;
       div.setAttribute("role", "listitem");
       div.setAttribute("aria-label", `Note: ${note.text.slice(0, 40)}`);
 
+      // note.text and formatDate output are both escaped before innerHTML insertion
       div.innerHTML = `
         <span class="osn-drag-handle" aria-hidden="true" title="Drag to reorder">⠿</span>
         <span class="osn-note-text">${escapeHtml(note.text)}</span>
@@ -563,7 +578,7 @@
         </div>
       `;
 
-      // #8: keyboard reordering via Arrow keys
+      // Arrow Up/Down reorders the focused note within the list
       div.addEventListener("keydown", async (e) => {
         if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
         e.preventDefault();
@@ -641,8 +656,8 @@
     }
   }
 
-  // Badge the currently selected list item (called after save/delete, deferred)
-  // #16: uses shared MESSAGE_ID_RE instead of local /\/id\// pattern
+  // Badge the currently selected list item after a save or delete.
+  // Reads the message ID from the URL and matches it against [data-convid] in the list.
   function updateCurrentListBadge(noteCount) {
     const urlId = location.href.match(MESSAGE_ID_RE)?.[1];
     if (!urlId) return;
@@ -651,7 +666,8 @@
     if (el) setBadgeOnElement(el, noteCount);
   }
 
-  // #5: read badges from index instead of fetching all storage
+  // Scan all visible conversation rows and badge any that have stored notes.
+  // Reads from the count index rather than fetching every note array individually.
   async function updateAllListBadges() {
     if (!isExtensionAlive()) return;
     const index = await loadIndex();
@@ -662,8 +678,9 @@
       if (seen.has(val)) return; // skip nested duplicates, badge outermost only
       seen.add(val);
       const rawKey = "osn_" + val;
+      // Check both decoded and encoded forms to handle any mixed legacy data
       const count = index[rawKey] ?? index["osn_" + encodeURIComponent(val)] ?? 0;
-      if (count > 0) setBadgeOnElement(el, count); // skip zero-count rows — no DOM query needed
+      if (count > 0) setBadgeOnElement(el, count);
     });
   }
 
@@ -673,6 +690,10 @@
     // Primary: stable ID present in new Outlook (outlook.cloud.microsoft)
     const container = document.querySelector("#ConversationReadingPaneContainer");
     if (container) {
+      // .L72vd is Outlook's minified class name for the email scroll container.
+      // We insert above it so the panel sits above the message thread, not inside it.
+      // If Outlook's build changes this name the panel falls back to prepending to the
+      // container itself, which still works — it just loses precise positioning.
       const scrollArea = container.querySelector(".L72vd");
       return { parent: container, before: scrollArea || null };
     }
@@ -707,10 +728,10 @@
     const key = getKey();
     if (!key) return false; // can't determine email ID yet — retry
 
-    // Already injected for this key — just re-render
+    // Already injected for this key — nothing to do
     if (document.getElementById("osn-panel") && key === currentKey) return true;
 
-    // #6: prevent duplicate injection if a previous async call is still in flight
+    // Guard against duplicate injection if a previous async call is still in flight
     if (injecting) return true;
     injecting = true;
 
@@ -731,9 +752,10 @@
       const notes = await loadNotes(currentKey);
       renderNotes(notes);
 
-      // Mark panel for pop-out specific styling.
-      // Use the insertion parent ID rather than isPopout() — with match_origin_as_fallback
-      // the content script may run in the outer frame where _owa_projection_root is absent.
+      // Detect pop-out by checking the insertion parent rather than calling isPopout().
+      // With match_origin_as_fallback active the script can run in a sub-frame where
+      // _owa_projection_root isn't present in that frame's document, so isPopout()
+      // would return false even though we're inside a pop-out window.
       const inPopout = insertion.parent.id === "_owa_projection_root";
       if (inPopout) panel.classList.add("osn-popout");
 
@@ -746,7 +768,7 @@
       panel.querySelector("#osn-btn-add").classList.add("osn-hidden");
 
       // In pop-out, align the collapsed icon with the thread subject header bar.
-      // Hide until positioned to avoid a jump.
+      // Hide until positioned to avoid a flash at the wrong position.
       if (inPopout) {
         panel.style.visibility = "hidden";
         setTimeout(() => {
@@ -762,10 +784,9 @@
       }
 
       updateAllListBadges();
-      // #7: attach the targeted list observer now that injection succeeded
       attachListObserver();
     } finally {
-      injecting = false; // #6: always reset, even if an error occurs
+      injecting = false; // always reset, even if an error occurs mid-injection
     }
 
     return true;
@@ -798,9 +819,11 @@
     badgeTimer = setTimeout(updateAllListBadges, delay);
   }
 
-  // #7: Narrow observer — watches only direct children of body for URL/pane changes.
-  // This drastically reduces the number of callbacks vs. the previous subtree:true.
-  new MutationObserver((mutations) => {
+  // Shallow observer on document.body — watches only direct children for URL and
+  // pane changes. Outlook is a SPA that rewrites the URL without navigating, so this
+  // is how we detect the user switching between email threads.
+  // Kept shallow (subtree: false) to avoid firing on every DOM mutation inside Outlook.
+  new MutationObserver(() => {
     // Wire up the pop-out deep observer as soon as _owa_projection_root lands in body.
     // attachPopoutObserver is idempotent so this is safe to call on every callback.
     attachPopoutObserver();
@@ -827,13 +850,12 @@
       if (key !== currentKey) panel?.remove();
       scheduleInject(OSN.RETRY_DELAY_MS);
     }
-  }).observe(document.body, { childList: true, subtree: false }); // #7: shallow only
+  }).observe(document.body, { childList: true, subtree: false });
 
-  // #7: Separate targeted observer for badge updates on the email list.
+  // Separate targeted observer for badge updates on the email list panel.
   // Attached after a delay on startup and after each successful injection.
-  // listObserverTarget is stored so we can detect if Outlook removes and replaces
-  // the list element (virtual-scroll SPAs do this), which silently disconnects the
-  // observer. On each call we verify the target is still connected and re-attach if not.
+  // Stores the observed element so we can detect if Outlook removes and replaces it
+  // (virtual-scroll SPAs do this), which would silently disconnect the observer.
   let listObserver = null;
   let listObserverTarget = null;
   function attachListObserver() {
@@ -853,12 +875,21 @@
   }
 
   // ── Pop-out observer ────────────────────────────────────────────────────────
-  // The shallow body observer can't see content loading inside #_owa_projection_root.
-  // Pop-out windows load their email content asynchronously deep inside that element,
-  // so we attach a dedicated deep observer on it to re-trigger injection as content arrives.
-  // This is idempotent: guarded by popoutObserverAttached so it only wires up once.
-  // It is called from both startup AND from the shallow body observer so it fires as soon
-  // as _owa_projection_root appears in the DOM, regardless of timing.
+  // Outlook pop-out windows load email content asynchronously deep inside
+  // #_owa_projection_root. The shallow body observer can't see those mutations,
+  // so we attach a dedicated deep observer here to re-trigger injection as content arrives.
+  //
+  // Why match_origin_as_fallback is set in the manifest: Outlook's pop-out window
+  // renders inside a frame whose URL is about:blank. The standard content_scripts
+  // "matches" patterns only compare against the frame's own URL, which would never
+  // match about:blank and would prevent the script from running in pop-out windows.
+  // match_origin_as_fallback tells Chrome to fall back to the top-level frame's URL
+  // for matching purposes — which is always one of the outlook.com / outlook.live.com /
+  // outlook.cloud.microsoft URLs listed in "matches" — so the script can inject there.
+  //
+  // This observer is idempotent (guarded by popoutObserverAttached) and is called
+  // from both startup and the shallow body observer so it fires as soon as
+  // _owa_projection_root appears in the DOM, regardless of timing.
   let popoutObserverAttached = false;
   function attachPopoutObserver() {
     if (popoutObserverAttached) return;
@@ -870,18 +901,12 @@
     }).observe(root, { childList: true, subtree: true });
   }
 
-  // Seed compose cache before first observer tick
+  // ── Startup ─────────────────────────────────────────────────────────────────
   cachedIsCompose = isComposeView();
-  // Migrate any old URL-encoded storage keys to decoded format (one-time)
-  migrateEncodedKeys();
-  // #5: build index from existing storage if this is an existing installation
-  bootstrapIndex();
-  // Initial injection attempt
-  tryInject();
-  // Badge scan runs independently — fires after the email list has rendered on load
-  scheduleBadges(500);
-  // #7: try attaching the list observer after the email list has likely rendered
-  setTimeout(attachListObserver, 1000);
-  // Pop-out: try immediately (root may already be present), body observer handles the late case
-  attachPopoutObserver();
+  migrateEncodedKeys();                 // one-time migration of URL-encoded storage keys
+  bootstrapIndex();                     // build count index for pre-existing installations
+  tryInject();                          // attempt panel injection immediately
+  scheduleBadges(500);                  // badge scan after email list has likely rendered
+  setTimeout(attachListObserver, 1000); // list observer after list has likely rendered
+  attachPopoutObserver();               // pop-out: try immediately; body observer handles late case
 })();
