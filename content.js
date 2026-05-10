@@ -231,7 +231,7 @@
     // ── Pop-out resize handle ──
     const resizeHandle = document.createElement("div");
     resizeHandle.id = "osn-resize-handle";
-    resizeHandle.innerHTML = "⋯";
+    resizeHandle.textContent = "⋯";
     panel.appendChild(resizeHandle);
 
     resizeHandle.addEventListener("mousedown", (e) => {
@@ -440,6 +440,8 @@
   function checkStorageQuota() {
     if (!isExtensionAlive()) return;
     try {
+      // null = measure total storage used across all keys, which is correct here
+      // because QUOTA_BYTES is also a global limit, not per-key.
       chrome.storage.local.getBytesInUse(null, (bytes) => {
         const QUOTA = chrome.storage.local.QUOTA_BYTES;
         const pct = bytes / QUOTA;
@@ -819,20 +821,33 @@
       return;
     }
 
-    if (!document.getElementById("osn-panel") || getKey() !== currentKey) {
-      if (getKey() !== currentKey) document.getElementById("osn-panel")?.remove();
+    const panel = document.getElementById("osn-panel");
+    const key = getKey();
+    if (!panel || key !== currentKey) {
+      if (key !== currentKey) panel?.remove();
       scheduleInject(OSN.RETRY_DELAY_MS);
     }
   }).observe(document.body, { childList: true, subtree: false }); // #7: shallow only
 
   // #7: Separate targeted observer for badge updates on the email list.
   // Attached after a delay on startup and after each successful injection.
+  // listObserverTarget is stored so we can detect if Outlook removes and replaces
+  // the list element (virtual-scroll SPAs do this), which silently disconnects the
+  // observer. On each call we verify the target is still connected and re-attach if not.
   let listObserver = null;
+  let listObserverTarget = null;
   function attachListObserver() {
-    if (listObserver) return;
+    if (listObserver && listObserverTarget?.isConnected) return; // still valid
+    // Target was removed — disconnect the stale observer before re-attaching
+    if (listObserver) {
+      listObserver.disconnect();
+      listObserver = null;
+      listObserverTarget = null;
+    }
     const listEl = document.querySelector('[role="list"][aria-label]')
       ?? document.querySelector('[data-app-section="MailList"]');
     if (!listEl) return;
+    listObserverTarget = listEl;
     listObserver = new MutationObserver(() => scheduleBadges(OSN.BADGE_DELAY_MS));
     listObserver.observe(listEl, { childList: true, subtree: true });
   }
