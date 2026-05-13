@@ -645,18 +645,18 @@
 
   // ── List item badges ────────────────────────────────────────────────────────
   function setBadgeOnElement(el, noteCount) {
-    el.querySelector(".osn-list-badge")?.remove();
-    if (noteCount > 0) {
-      // Badge uses position:absolute, so the row element needs a positioning context.
-      // Only set it when the element is static — don't override sticky/fixed/absolute.
-      if (getComputedStyle(el).position === "static") el.style.position = "relative";
-      const badge = document.createElement("img");
-      badge.className = "osn-list-badge";
-      badge.src = POSTIT_URL;
-      badge.title = `${noteCount} sticky note${noteCount !== 1 ? "s" : ""}`;
-      badge.alt = "";
-      el.appendChild(badge);
-    }
+    const existing = el.querySelector(".osn-list-badge");
+    if (noteCount <= 0) { existing?.remove(); return; }
+    // If the badge is already there, do nothing — avoids the remove→re-add flicker
+    // that would otherwise appear on every badge scan while the user hovers rows.
+    if (existing) return;
+    if (getComputedStyle(el).position === "static") el.style.position = "relative";
+    const badge = document.createElement("img");
+    badge.className = "osn-list-badge";
+    badge.src = POSTIT_URL;
+    badge.title = `${noteCount} sticky note${noteCount !== 1 ? "s" : ""}`;
+    badge.alt = "";
+    el.appendChild(badge);
   }
 
   // Badge the currently selected list item after a save or delete.
@@ -835,9 +835,22 @@
   }
 
   let badgeTimer = null;
+  let badgeThrottleTimer = null;
   function scheduleBadges(delay) {
+    // Trailing debounce: runs `delay` ms after the last mutation (normal case).
     clearTimeout(badgeTimer);
     badgeTimer = setTimeout(updateAllListBadges, delay);
+    // Throttle: during continuous mutations (hover re-renders, rapid scroll) the
+    // debounce timer keeps resetting and never fires. The throttle ensures a scan
+    // runs every 500ms regardless, so badges reappear without waiting for silence.
+    if (!badgeThrottleTimer) {
+      badgeThrottleTimer = setTimeout(() => {
+        badgeThrottleTimer = null;
+        clearTimeout(badgeTimer);
+        badgeTimer = null;
+        updateAllListBadges();
+      }, 500);
+    }
   }
 
   // ── Navigation handler ──────────────────────────────────────────────────────
