@@ -672,8 +672,18 @@
     if (!isExtensionAlive()) return;
     const index = await loadIndex();
     if (Object.keys(index).length === 0) return;
+
+    // Scope the search to the mail list container rather than the full document.
+    // When an email thread is open, the reading pane also contains [data-convid]
+    // elements for conversation items. Querying document-wide lets those reading-pane
+    // elements land in the 'seen' set first (document order) and steal the slot for
+    // their convid, so the actual list-row badge call is silently skipped.
+    const listEl = (listObserverTarget?.isConnected ? listObserverTarget : null)
+      ?? document.querySelector('[role="list"][aria-label]')
+      ?? document.querySelector('[data-app-section="MailList"]')
+      ?? document; // absolute fallback — better to over-badge than never badge
     const seen = new Set();
-    document.querySelectorAll('[data-convid]').forEach((el) => {
+    listEl.querySelectorAll('[data-convid]').forEach((el) => {
       const val = el.getAttribute('data-convid');
       if (seen.has(val)) return; // skip nested duplicates, badge outermost only
       seen.add(val);
@@ -881,20 +891,25 @@
   }).observe(document.body, { childList: true, subtree: false });
 
   // Separate targeted observer for badge updates on the email list panel.
-  // Attached after a delay on startup and after each successful injection.
-  // Stores the observed element so we can detect if Outlook removes and replaces it
-  // (virtual-scroll SPAs do this), which would silently disconnect the observer.
+  // Two observers are maintained:
+  //   listObserver      — deep observer on the list element itself; fires when items
+  //                       are added/removed (virtual scroll, new mail arriving).
+  //   listParentObserver — shallow observer on the list's parent; fires when Outlook
+  //                       replaces the entire list container (some virtual-scroll
+  //                       implementations swap the root element, not just its children).
+  //                       When that happens listObserver silently disconnects, so we
+  //                       need this second watcher to re-attach to the new element.
   let listObserver = null;
   let listObserverTarget = null;
+  let listParentObserver = null;
   let listAttachRetries = 0;
   function attachListObserver() {
     if (listObserver && listObserverTarget?.isConnected) return; // still valid
-    // Target was removed — disconnect the stale observer before re-attaching
-    if (listObserver) {
-      listObserver.disconnect();
-      listObserver = null;
-      listObserverTarget = null;
-    }
+    // Disconnect stale observers before re-attaching
+    if (listObserver) { listObserver.disconnect(); listObserver = null; }
+    if (listParentObserver) { listParentObserver.disconnect(); listParentObserver = null; }
+    listObserverTarget = null;
+
     const listEl = document.querySelector('[role="list"][aria-label]')
       ?? document.querySelector('[data-app-section="MailList"]');
     if (!listEl) {
@@ -906,6 +921,18 @@
     }
     listAttachRetries = 0;
     listObserverTarget = listEl;
+
+    // Watch the list's parent (shallow) so we know when the list container itself
+    // is replaced. When that happens, re-attach to the new element immediately.
+    const parent = listEl.parentElement;
+    if (parent) {
+      listParentObserver = new MutationObserver(() => {
+        if (!listObserverTarget?.isConnected) attachListObserver();
+      });
+      listParentObserver.observe(parent, { childList: true });
+    }
+
+    // Deep observer for item-level changes (virtual scroll add/remove, new mail)
     listObserver = new MutationObserver(() => scheduleBadges(OSN.BADGE_DELAY_MS));
     listObserver.observe(listEl, { childList: true, subtree: true });
     // Badge items already in the list at attach time — the observer only fires on
