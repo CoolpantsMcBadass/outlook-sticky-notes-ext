@@ -647,10 +647,9 @@
   function setBadgeOnElement(el, noteCount) {
     const existing = el.querySelector(".osn-list-badge");
     if (noteCount <= 0) { existing?.remove(); return; }
-    // If the badge is already there, do nothing — avoids the remove→re-add flicker
-    // that would otherwise appear on every badge scan while the user hovers rows.
+    // Skip if badge is already present — makes the function idempotent so the
+    // polling scan can run frequently without causing visible flicker.
     if (existing) return;
-    if (getComputedStyle(el).position === "static") el.style.position = "relative";
     const badge = document.createElement("img");
     badge.className = "osn-list-badge";
     badge.src = POSTIT_URL;
@@ -835,22 +834,9 @@
   }
 
   let badgeTimer = null;
-  let badgeThrottleTimer = null;
   function scheduleBadges(delay) {
-    // Trailing debounce: runs `delay` ms after the last mutation (normal case).
     clearTimeout(badgeTimer);
     badgeTimer = setTimeout(updateAllListBadges, delay);
-    // Throttle: during continuous mutations (hover re-renders, rapid scroll) the
-    // debounce timer keeps resetting and never fires. The throttle ensures a scan
-    // runs every 500ms regardless, so badges reappear without waiting for silence.
-    if (!badgeThrottleTimer) {
-      badgeThrottleTimer = setTimeout(() => {
-        badgeThrottleTimer = null;
-        clearTimeout(badgeTimer);
-        badgeTimer = null;
-        updateAllListBadges();
-      }, 500);
-    }
   }
 
   // ── Navigation handler ──────────────────────────────────────────────────────
@@ -992,4 +978,11 @@
   tryInject();            // attempt panel injection immediately
   attachListObserver();   // self-retrying — finds the list when it renders and badges it
   attachPopoutObserver(); // pop-out: try immediately; body observer handles late case
+
+  // Poll badge state every 300 ms. Outlook re-renders list rows on hover, scroll,
+  // and selection changes, stripping any badges we appended. Rather than chasing
+  // every mutation type, a lightweight poll re-applies missing badges reliably.
+  // setBadgeOnElement is idempotent (no-op if badge already present) so this is
+  // cheap: it only does real work when a badge is actually missing.
+  setInterval(() => { if (isExtensionAlive()) updateAllListBadges(); }, 300);
 })();

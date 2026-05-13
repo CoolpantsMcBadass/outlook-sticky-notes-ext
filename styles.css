@@ -460,16 +460,15 @@
 }
 
 /* ── Email list badge ──────────────────────────────────────────────────────── */
-/* position:absolute keeps the badge out of the row's flex layout (email rows  */
-/* are column-direction flex containers; inline children land at the bottom).   */
-/* setBadgeOnElement sets position:relative on the row element if it's static.  */
 .osn-list-badge {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  width: 16px;
-  height: 16px;
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  margin-left: 5px;
+  vertical-align: middle;
+  flex-shrink: 0;
   pointer-events: none;
-  z-index: 10;
+  position: relative;
+  top: -1px;
   object-fit: contain;
 }
