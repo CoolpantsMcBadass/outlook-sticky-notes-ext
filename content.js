@@ -731,8 +731,14 @@
     // Already injected for this key — nothing to do
     if (document.getElementById("osn-panel") && key === currentKey) return true;
 
-    // Guard against duplicate injection if a previous async call is still in flight
-    if (injecting) return true;
+    // Guard against duplicate injection if a previous async call is still in flight.
+    // If the panel is gone or the key changed while we were injecting, return false
+    // so the caller retries — the in-flight await will finish within a few hundred ms
+    // and the next retry will find injecting=false and proceed normally.
+    if (injecting) {
+      if (!document.getElementById("osn-panel") || key !== currentKey) return false;
+      return true;
+    }
     injecting = true;
 
     try {
@@ -819,25 +825,47 @@
     badgeTimer = setTimeout(updateAllListBadges, delay);
   }
 
+  // ── Navigation handler ──────────────────────────────────────────────────────
+  // Handles a URL change regardless of how it was detected (Navigation API,
+  // popstate, or body mutation). Returns true if a navigation was processed.
+  // Idempotent: the lastUrl guard prevents double-firing on the same URL.
+  function handleNavigation() {
+    if (location.href === lastUrl) return false;
+    lastUrl = location.href;
+    cachedIsCompose = isComposeView();
+    document.getElementById("osn-panel")?.remove();
+    injecting = false; // cancel any in-flight injection for the old thread
+    if (!cachedIsCompose) {
+      scheduleInject(OSN.NAV_INJECT_DELAY);
+      scheduleBadges(OSN.BADGE_NAV_DELAY);
+    }
+    return true;
+  }
+
+  // Outlook navigates between email threads via history.pushState(), which does NOT
+  // fire popstate and often does NOT touch direct body children — so the body observer
+  // below can miss the URL change entirely, leaving stale notes visible until an
+  // unrelated body mutation happens to trigger it.
+  //
+  // The Navigation API catches every pushState/replaceState/traverse navigation
+  // synchronously, with location.href already reflecting the new URL. popstate
+  // covers browser back/forward as a belt-and-suspenders fallback.
+  if (window.navigation) {
+    window.navigation.addEventListener("navigate", handleNavigation);
+  }
+  window.addEventListener("popstate", handleNavigation);
+
   // Shallow observer on document.body — watches only direct children for URL and
-  // pane changes. Outlook is a SPA that rewrites the URL without navigating, so this
-  // is how we detect the user switching between email threads.
+  // pane changes. handleNavigation() is now the primary URL-change detector;
+  // this observer acts as a secondary safety net and handles non-URL pane changes
+  // (e.g. key mismatch without a URL change, compose-view transitions).
   // Kept shallow (subtree: false) to avoid firing on every DOM mutation inside Outlook.
   new MutationObserver(() => {
     // Wire up the pop-out deep observer as soon as _owa_projection_root lands in body.
     // attachPopoutObserver is idempotent so this is safe to call on every callback.
     attachPopoutObserver();
 
-    const urlChanged = location.href !== lastUrl;
-    if (urlChanged) {
-      lastUrl = location.href;
-      cachedIsCompose = isComposeView();
-      document.getElementById("osn-panel")?.remove();
-      if (cachedIsCompose) return;
-      scheduleInject(OSN.NAV_INJECT_DELAY);
-      scheduleBadges(OSN.BADGE_NAV_DELAY);
-      return;
-    }
+    if (handleNavigation()) return; // URL changed — scheduleInject already called
 
     if (cachedIsCompose) {
       document.getElementById("osn-panel")?.remove();
@@ -858,6 +886,7 @@
   // (virtual-scroll SPAs do this), which would silently disconnect the observer.
   let listObserver = null;
   let listObserverTarget = null;
+  let listAttachRetries = 0;
   function attachListObserver() {
     if (listObserver && listObserverTarget?.isConnected) return; // still valid
     // Target was removed — disconnect the stale observer before re-attaching
@@ -868,10 +897,20 @@
     }
     const listEl = document.querySelector('[role="list"][aria-label]')
       ?? document.querySelector('[data-app-section="MailList"]');
-    if (!listEl) return;
+    if (!listEl) {
+      // Mail list not rendered yet — retry with a cap to avoid running forever
+      // if the user is in a non-mail view (calendar, people, etc.)
+      if (listAttachRetries++ < 10) setTimeout(attachListObserver, 500);
+      else listAttachRetries = 0; // reset so a future call can try again
+      return;
+    }
+    listAttachRetries = 0;
     listObserverTarget = listEl;
     listObserver = new MutationObserver(() => scheduleBadges(OSN.BADGE_DELAY_MS));
     listObserver.observe(listEl, { childList: true, subtree: true });
+    // Badge items already in the list at attach time — the observer only fires on
+    // future mutations, so without this scan the initial render is never badged.
+    scheduleBadges(OSN.BADGE_DELAY_MS);
   }
 
   // ── Pop-out observer ────────────────────────────────────────────────────────
@@ -903,10 +942,9 @@
 
   // ── Startup ─────────────────────────────────────────────────────────────────
   cachedIsCompose = isComposeView();
-  migrateEncodedKeys();                 // one-time migration of URL-encoded storage keys
-  bootstrapIndex();                     // build count index for pre-existing installations
-  tryInject();                          // attempt panel injection immediately
-  scheduleBadges(500);                  // badge scan after email list has likely rendered
-  setTimeout(attachListObserver, 1000); // list observer after list has likely rendered
-  attachPopoutObserver();               // pop-out: try immediately; body observer handles late case
+  migrateEncodedKeys();   // one-time migration of URL-encoded storage keys
+  bootstrapIndex();       // build count index for pre-existing installations
+  tryInject();            // attempt panel injection immediately
+  attachListObserver();   // self-retrying — finds the list when it renders and badges it
+  attachPopoutObserver(); // pop-out: try immediately; body observer handles late case
 })();
