@@ -647,6 +647,9 @@
   function setBadgeOnElement(el, noteCount) {
     el.querySelector(".osn-list-badge")?.remove();
     if (noteCount > 0) {
+      // Badge uses position:absolute, so the row element needs a positioning context.
+      // Only set it when the element is static — don't override sticky/fixed/absolute.
+      if (getComputedStyle(el).position === "static") el.style.position = "relative";
       const badge = document.createElement("img");
       badge.className = "osn-list-badge";
       badge.src = POSTIT_URL;
@@ -667,30 +670,32 @@
   }
 
   // Scan all visible conversation rows and badge any that have stored notes.
-  // Reads from the count index rather than fetching every note array individually.
+  // Iterates the count index (known note-bearing threads) and finds each row by
+  // its specific convid — same pattern as updateCurrentListBadge. This avoids the
+  // querySelectorAll+seen approach where reading-pane [data-convid] elements (present
+  // when a thread is open) appear before list-row elements in document order and
+  // silently steal the dedup slot, leaving the visible list row unbadged.
   async function updateAllListBadges() {
     if (!isExtensionAlive()) return;
     const index = await loadIndex();
-    if (Object.keys(index).length === 0) return;
+    const entries = Object.entries(index);
+    if (entries.length === 0) return;
 
-    // Scope the search to the mail list container rather than the full document.
-    // When an email thread is open, the reading pane also contains [data-convid]
-    // elements for conversation items. Querying document-wide lets those reading-pane
-    // elements land in the 'seen' set first (document order) and steal the slot for
-    // their convid, so the actual list-row badge call is silently skipped.
+    // Prefer searching within the mail list so reading-pane elements don't shadow rows.
+    // Fall back to document-wide search if the list container isn't available yet.
     const listEl = (listObserverTarget?.isConnected ? listObserverTarget : null)
       ?? document.querySelector('[role="list"][aria-label]')
-      ?? document.querySelector('[data-app-section="MailList"]')
-      ?? document; // absolute fallback — better to over-badge than never badge
-    const seen = new Set();
-    listEl.querySelectorAll('[data-convid]').forEach((el) => {
-      const val = el.getAttribute('data-convid');
-      if (seen.has(val)) return; // skip nested duplicates, badge outermost only
-      seen.add(val);
-      const rawKey = "osn_" + val;
-      // Check both decoded and encoded forms to handle any mixed legacy data
-      const count = index[rawKey] ?? index["osn_" + encodeURIComponent(val)] ?? 0;
-      if (count > 0) setBadgeOnElement(el, count);
+      ?? document.querySelector('[data-app-section="MailList"]');
+
+    entries.forEach(([rawKey, count]) => {
+      if (count <= 0) return;
+      const convid = rawKey.slice(4); // strip "osn_" prefix
+      // Search list-scoped first (avoids reading pane), encoded form handles legacy keys
+      const el = listEl?.querySelector(`[data-convid="${CSS.escape(convid)}"]`)
+        ?? listEl?.querySelector(`[data-convid="${CSS.escape(encodeURIComponent(convid))}"]`)
+        ?? document.querySelector(`[data-convid="${CSS.escape(convid)}"]`)
+        ?? document.querySelector(`[data-convid="${CSS.escape(encodeURIComponent(convid))}"]`);
+      if (el) setBadgeOnElement(el, count);
     });
   }
 
