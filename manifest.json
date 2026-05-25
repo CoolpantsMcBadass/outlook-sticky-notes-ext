@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Outlook Sticky Notes",
   "short_name": "Sticky Notes",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Pin notes and action items to the top of any Outlook email thread. All notes are stored locally — nothing leaves your browser.",
   "homepage_url": "https://github.com/CoolpantsMcBadass/outlook-sticky-notes-ext",
   "permissions": ["storage"],
