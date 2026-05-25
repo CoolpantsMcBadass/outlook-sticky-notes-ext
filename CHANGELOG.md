@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.3] - 2026-05-25
+
+### Fixed
+- Notes now load correctly in "Popout only" mode (View > Reading pane > Popout only). Previously the pop-out window's URL is `about:blank` and the main window's URL is just the inbox (no message ID), so `getKey()` fell through to the subject-text fallback and created a mismatched key. Now reads the selected conversation's `data-convid` from the opener's email list DOM, which matches the key used in normal reading-pane mode.
+- `isPopout()` now recognizes "Popout only" mode windows (`about:blank` with a same-origin opener), not just the standard pop-out triggered by the email's pop-out icon.
+
 ## [1.0.2] - 2026-05-13
 
 ### Fixed

@@ -61,7 +61,11 @@
 
   // ── Pop-out detection ──────────────────────────────────────────────────────
   function isPopout() {
-    return !!document.getElementById("_owa_projection_root");
+    // _owa_projection_root: standard pop-out (clicking the pop-out icon on an email).
+    // about:blank + opener: "Popout only" mode (View > Reading pane > Popout only),
+    // where Outlook opens each email in a standalone window whose URL is about:blank.
+    return !!document.getElementById("_owa_projection_root")
+      || (location.href === "about:blank" && !!window.opener);
   }
 
   // ── Key extraction ──────────────────────────────────────────────────────────
@@ -83,6 +87,16 @@
         const openerUrl = window.opener.location.href;
         const openerMatch = openerUrl.match(MESSAGE_ID_RE);
         if (openerMatch) return "osn_" + decodeURIComponent(openerMatch[1]);
+
+        // "Popout only" mode: the opener is the main Outlook window showing just the
+        // email list (no reading pane), so its URL has no message ID. Instead, read
+        // the selected conversation row from the opener's email list DOM — its
+        // data-convid value is identical to the decoded URL segment used as the storage
+        // key in normal reading-pane mode, so notes transfer correctly.
+        const opDoc = window.opener.document;
+        const selectedConv = opDoc.querySelector('[data-convid][aria-selected="true"]')
+          ?? opDoc.querySelector('[data-convid]:focus-within');
+        if (selectedConv) return "osn_" + selectedConv.getAttribute('data-convid');
       } catch { /* cross-origin guard */ }
     }
 
