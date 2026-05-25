@@ -65,6 +65,24 @@ outlook-sticky-notes-ext/
 └── privacy-policy.md
 ```
 
+## Release Notes
+
+See the full [Releases page](https://github.com/CoolpantsMcBadass/outlook-sticky-notes-ext/releases) for all version history.
+
+### v1.0.3
+- Fixed notes not appearing when using **"Popout only"** reading pane mode (View > Reading pane > Popout only)
+
+### v1.0.2
+- Fixed badges disappearing after Outlook re-renders list rows on hover or scroll
+- Fixed stale notes from a previous thread occasionally remaining visible when switching emails
+- Fixed badge not appearing on the currently open thread's list row
+- Fixed panel being dropped when navigating quickly between emails
+
+### v1.0.0
+- Initial release
+
+---
+
 ## Technical Notes
 
 - Built with **Manifest V3** — no background service worker needed
