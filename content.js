@@ -691,14 +691,26 @@
   async function updateAllListBadges() {
     if (!isExtensionAlive()) return;
     const index = await loadIndex();
-    const entries = Object.entries(index);
-    if (entries.length === 0) return;
 
     // Prefer searching within the mail list so reading-pane elements don't shadow rows.
     // Fall back to document-wide search if the list container isn't available yet.
     const listEl = (listObserverTarget?.isConnected ? listObserverTarget : null)
       ?? document.querySelector('[role="list"][aria-label]')
       ?? document.querySelector('[data-app-section="MailList"]');
+
+    // Remove any badges whose key is no longer in the index (e.g. deleted from a
+    // pop-out window — the pop-out updates storage but can't reach this window's DOM).
+    document.querySelectorAll(".osn-list-badge").forEach((badge) => {
+      const row = badge.closest("[data-convid]");
+      if (!row) { badge.remove(); return; }
+      const convid = row.getAttribute("data-convid");
+      if (!index["osn_" + convid] && !index["osn_" + encodeURIComponent(convid)]) {
+        badge.remove();
+      }
+    });
+
+    const entries = Object.entries(index);
+    if (entries.length === 0) return;
 
     entries.forEach(([rawKey, count]) => {
       if (count <= 0) return;
@@ -750,6 +762,14 @@
       return true; // don't retry
     }
 
+    // Don't inject on the inbox/list view — only when a thread is actually open.
+    // The URL contains /id/<msgId> or /read/<msgId> exactly when a thread is open;
+    // #ConversationReadingPaneContainer is present even on the empty reading pane so
+    // it's not a reliable signal. Pop-outs use about:blank so they bypass the URL check.
+    if (!location.href.match(MESSAGE_ID_RE) && !isPopout()) {
+      return false; // retry until a thread is opened
+    }
+
     const insertion = findInsertionPoint();
     if (!insertion) return false;
 
@@ -781,6 +801,9 @@
       }
 
       const panel = buildPanel();
+      // Hide before insertion so the panel is never visible in its default expanded
+      // state during the async loadNotes gap — that caused a brief full-pane flash.
+      panel.style.visibility = "hidden";
       insertion.parent.insertBefore(panel, insertion.before);
 
       const notes = await loadNotes(currentKey);
@@ -801,10 +824,10 @@
       panel.querySelector("#osn-input-area").classList.add("osn-hidden");
       panel.querySelector("#osn-btn-add").classList.add("osn-hidden");
 
-      // In pop-out, align the collapsed icon with the thread subject header bar.
-      // Hide until positioned to avoid a flash at the wrong position.
+      // Reveal after a short delay to let any rapid remove/reinject cycle (e.g. Outlook
+      // URL normalization after pushState) complete before the icon becomes visible.
       if (inPopout) {
-        panel.style.visibility = "hidden";
+        // Pop-out: also align the collapsed icon with the thread subject header bar.
         setTimeout(() => {
           const root = document.getElementById("_owa_projection_root");
           const heading = document.querySelector('[id$="_SUBJECT"], [role="heading"][aria-level="3"]');
@@ -815,6 +838,8 @@
           }
           panel.style.visibility = "";
         }, OSN.POPOUT_ALIGN_MS);
+      } else {
+        setTimeout(() => { panel.style.visibility = ""; }, OSN.NAV_INJECT_DELAY);
       }
 
       updateAllListBadges();
