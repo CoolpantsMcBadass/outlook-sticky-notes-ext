@@ -1,0 +1,6 @@
+
+2026-06-02 - v1.0.4
+- Fix: panel no longer appears on inbox/list view before any email thread is opened
+- Fix: stale email list badge now clears when a note is deleted from a pop-out window
+- Fix: brief flash of expanded notes panel when switching email threads
+- Fix: sticky notes icon no longer flickers on initial load after navigating to a thread

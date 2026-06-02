@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.0.4] - 2026-06-02
+
+### Fixed
+- Panel no longer appears on the inbox/list view before any email thread is opened. Previously the icon could show up floating over the empty reading pane and attach notes to the first thread in the list.
+- Stale email list badge now clears within 300ms when a note is deleted from a pop-out window. Previously the badge in the main window persisted because the pop-out can't reach the main window's DOM directly — the fix adds a reverse pass in the badge polling loop to remove badges whose key is no longer in the index.
+- Fixed brief flash of the expanded sticky notes panel when switching email threads. The panel was inserted into the DOM in its default expanded state before the async note load completed, making it briefly visible before collapsing.
+- Fixed sticky notes icon flickering on initial load. A visibility delay is now applied before DOM insertion to absorb any rapid remove/reinject cycle caused by Outlook's URL normalization after `pushState`.
+
 ## [1.0.3] - 2026-05-25
 
 ### Fixed
